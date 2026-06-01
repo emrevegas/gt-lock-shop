@@ -61,6 +61,36 @@ class Admin(commands.Cog):
             f"✅ Withdraw dünyaları: {', '.join(saved)}", ephemeral=True
         )
 
+    @app_commands.command(
+        name="cancelallorders",
+        description="[Admin] Tüm bekleyen/işlenen siparişleri iptal et (bakiye iade)",
+    )
+    @app_commands.describe(onay="Onaylamak için EVET yaz")
+    async def cancelallorders(self, interaction: discord.Interaction, onay: str):
+        if not is_admin(interaction):
+            return await interaction.response.send_message("Yetkisiz.", ephemeral=True)
+        if onay.strip().upper() != "EVET":
+            return await interaction.response.send_message(
+                "⚠️ Tüm **pending** ve **processing** siparişler iptal edilir ve bakiye iade edilir.\n"
+                "Onaylamak için: `onay:EVET`",
+                ephemeral=True,
+            )
+
+        result = await orders.cancel_all_active_orders()
+        counts = await orders.count_orders_by_status()
+        if result["cancelled"] == 0:
+            return await interaction.response.send_message(
+                f"İptal edilecek aktif sipariş yok.\nDurumlar: `{counts}`",
+                ephemeral=True,
+            )
+        await interaction.response.send_message(
+            f"✅ **{result['cancelled']}** sipariş iptal edildi.\n"
+            f"💰 Toplam iade: **{result['refunded_total']:.2f}** "
+            f"({result['users_refunded']} kullanıcı)\n"
+            f"Durumlar: `{counts}`",
+            ephemeral=True,
+        )
+
     @app_commands.command(name="requeueorders", description="[Admin] Takılı processing siparişleri sıraya al")
     async def requeueorders(self, interaction: discord.Interaction):
         if not is_admin(interaction):

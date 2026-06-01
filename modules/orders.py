@@ -167,3 +167,51 @@ async def count_orders_by_status() -> dict[str, int]:
         "SELECT status, COUNT(*) AS c FROM orders GROUP BY status"
     )
     return {str(r["status"]): int(r["c"]) for r in rows}
+
+
+async def cancel_all_active_orders(
+    *,
+    reason: str = "admin_cancelled",
+    refund: bool = True,
+) -> dict[str, Any]:
+    """
+    Cancel every pending/processing order.
+    Refunds price_paid to each user when refund=True.
+    """
+    rows = await db.fetchall(
+        "SELECT * FROM orders WHERE status IN ('pending', 'processing') ORDER BY id ASC"
+    )
+    if not rows:
+        return {"cancelled": 0, "refunded_total": 0.0, "users_refunded": 0}
+
+    conn = db.get_conn()
+    now = int(time.time())
+    safe_reason = (reason or "admin_cancelled")[:500]
+    cancelled = 0
+    refunded_total = 0.0
+    users_refunded: set[int] = set()
+
+    for row in rows:
+        order = dict(row)
+        if refund:
+            amount = float(order["price_paid"])
+            if amount > 0:
+                await db.add_balance(int(order["user_id"]), amount)
+                refunded_total += amount
+                users_refunded.add(int(order["user_id"]))
+        await conn.execute(
+            """
+            UPDATE orders
+            SET status = 'cancelled', fail_reason = ?, completed_at = ?, notified = 1
+            WHERE id = ? AND status IN ('pending', 'processing')
+            """,
+            (safe_reason, now, order["id"]),
+        )
+        cancelled += 1
+
+    await conn.commit()
+    return {
+        "cancelled": cancelled,
+        "refunded_total": round(refunded_total, 2),
+        "users_refunded": len(users_refunded),
+    }

@@ -65,6 +65,12 @@ async def requeue_stuck():
     return {"requeued": n}
 
 
+@app.post("/api/orders/cancel-all", dependencies=[Depends(verify_key)])
+async def cancel_all_orders():
+  result = await orders.cancel_all_active_orders()
+  return result
+
+
 @app.post("/api/orders/complete", dependencies=[Depends(verify_key)])
 async def complete_order(body: CompleteBody):
     order = await orders.complete_order(body.order_id)
