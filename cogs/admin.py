@@ -61,6 +61,19 @@ class Admin(commands.Cog):
             f"✅ Withdraw dünyaları: {', '.join(saved)}", ephemeral=True
         )
 
+    @app_commands.command(name="requeueorders", description="[Admin] Takılı processing siparişleri sıraya al")
+    async def requeueorders(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            return await interaction.response.send_message("Yetkisiz.", ephemeral=True)
+        from modules.orders import count_orders_by_status, release_all_processing
+
+        n = await release_all_processing()
+        counts = await count_orders_by_status()
+        await interaction.response.send_message(
+            f"✅ {n} sipariş yeniden `pending` yapıldı.\nDurumlar: `{counts}`",
+            ephemeral=True,
+        )
+
     @app_commands.command(name="addbalance", description="[Admin] Kullanıcıya bakiye ekle")
     async def addbalance(
         self,

@@ -93,6 +93,10 @@ class GTLockBot(commands.Bot):
                     reason = order.get("fail_reason") or "bilinmiyor"
                     if reason == "order_timeout_2min":
                         reason = "2 dakika içinde trade tamamlanmadı"
+                    elif reason == "warp_failed":
+                        reason = "Bot hedef dünyaya giremedi (dünya adı/kapı ID kontrol et)"
+                    elif reason == "bot_offline":
+                        reason = "Growtopia botu çevrimiçi değil"
                     await user.send(
                         f"❌ Sipariş `#{order['id']}` başarısız: {reason}\n"
                         f"Bakiye iade edildi."

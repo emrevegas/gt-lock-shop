@@ -147,3 +147,23 @@ async def reset_stale_processing(max_age_sec: int = 120) -> int:
     )
     await conn.commit()
     return cur.rowcount
+
+
+async def release_all_processing() -> int:
+    """Re-queue every processing order (API/bot restart)."""
+    conn = db.get_conn()
+    cur = await conn.execute(
+        """
+        UPDATE orders SET status = 'pending', luci_claimed_at = NULL
+        WHERE status = 'processing'
+        """
+    )
+    await conn.commit()
+    return cur.rowcount
+
+
+async def count_orders_by_status() -> dict[str, int]:
+    rows = await db.fetchall(
+        "SELECT status, COUNT(*) AS c FROM orders GROUP BY status"
+    )
+    return {str(r["status"]): int(r["c"]) for r in rows}

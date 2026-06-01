@@ -14,6 +14,9 @@ from modules import orders
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.init_db()
+    released = await orders.release_all_processing()
+    if released:
+        print(f"[API] Re-queued {released} stuck processing order(s)")
     await orders.reset_stale_processing()
     yield
 
@@ -47,7 +50,19 @@ async def next_order():
     order = await orders.claim_next_pending()
     if not order:
         return {"order": None}
+    print(f"[API] Claimed order #{order['id']} → world {order['world_name']} growid={order['growid']}")
     return {"order": order}
+
+
+@app.get("/api/orders/stats", dependencies=[Depends(verify_key)])
+async def order_stats():
+    return {"counts": await orders.count_orders_by_status()}
+
+
+@app.post("/api/orders/requeue-stuck", dependencies=[Depends(verify_key)])
+async def requeue_stuck():
+    n = await orders.release_all_processing()
+    return {"requeued": n}
 
 
 @app.post("/api/orders/complete", dependencies=[Depends(verify_key)])
