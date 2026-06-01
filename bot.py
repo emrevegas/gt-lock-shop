@@ -109,9 +109,9 @@ class GTLockBot(commands.Bot):
             if user:
                 try:
                     await user.send(
-                        f"✅ **İşlem onaylandı** — Sipariş `#{order['id']}`\n"
+                        f"✅ **Teslimat tamamlandı** — Sipariş `#{order['id']}`\n"
                         f"{order['quantity']}x {DISPLAY.get(order['item_type'], order['item_type'])} "
-                        f"→ `{order['growid']}` dünyası: `{order['world_name']}`"
+                        f"→ dünya `{order['world_name']}` bağış kutusuna bırakıldı."
                     )
                 except discord.HTTPException:
                     pass
@@ -123,11 +123,17 @@ class GTLockBot(commands.Bot):
                 try:
                     reason = order.get("fail_reason") or "bilinmiyor"
                     if reason == "order_timeout_2min":
-                        reason = "2 dakika içinde trade tamamlanmadı"
+                        reason = "2 dakika içinde teslimat tamamlanmadı"
                     elif reason == "warp_failed":
                         reason = "Bot hedef dünyaya giremedi"
                     elif reason == "bot_offline":
                         reason = "Growtopia botu çevrimiçi değil"
+                    elif reason == "no_donation_box":
+                        reason = "Dünyada erişilebilir bağış kutusu bulunamadı"
+                    elif reason == "donation_failed":
+                        reason = "Bağış kutusuna item konulamadı"
+                    elif reason == "invalid_world":
+                        reason = "Geçersiz dünya adı"
                     await user.send(
                         f"❌ Sipariş `#{order['id']}` başarısız: {reason}\n"
                         f"Bakiye iade edildi."

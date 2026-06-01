@@ -1,6 +1,6 @@
 # GT Lock Shop
 
-Discord bot + Lucifer (Luci) script ile **WL / DL / BGL** satışı. Kullanıcılar **Solana** ve **Litecoin** ile bakiye yükler, admin fiyatından kilit satın alır; Luci botu rastgele withdraw dünyasında trade ile teslim eder.
+Discord bot + Lucifer (Luci) script ile **WL / DL / BGL** satışı. Kullanıcılar **Solana** ve **Litecoin** ile bakiye yükler, admin fiyatından kilit satın alır; Luci botu kullanıcının dünyasındaki **bağış kutusuna** (Donation Box) teslim eder.
 
 ## Oranlar
 
@@ -15,8 +15,8 @@ Discord bot + Lucifer (Luci) script ile **WL / DL / BGL** satışı. Kullanıcı
 ## Mimari (dosya kuyruğu)
 
 ```
-[Kullanıcı Discord] → /buy → SQLite + data/luci/pending/{id}.json
-[Luci withdraw_worker.lua] → read/write dosyalar → trade
+[Kullanıcı Discord] → /buy (GrowID + dünya) → SQLite + data/luci/pending/{id}.json
+[Luci withdraw_worker.lua] → dünyaya git → donation box bul → item bırak
                          → data/luci/results/{id}.json
 [bot.py] → results okur → DB + Discord DM
 ```
@@ -30,7 +30,7 @@ Klasörler (`data/luci/`):
 | `results/` | Luci | `completed` veya `failed` |
 
 - **bot.py** — Discord + dosya kuyruğu izleme (3 sn)
-- **scripts/withdraw_worker.lua** — Luci trade (HTTP yok)
+- **scripts/withdraw_worker.lua** — Luci donation box teslimatı (HTTP yok)
 
 ## Kurulum
 
@@ -40,7 +40,7 @@ python -m venv .venv
 .venv\Scripts\activate   # Windows
 pip install -r requirements.txt
 copy .env.example .env
-# DISCORD_TOKEN, LUCI_API_KEY, CRYPTO_MNEMONIC, WITHDRAW_WORLDS doldur
+# DISCORD_TOKEN, CRYPTO_MNEMONIC doldur
 python bot.py
 ```
 
@@ -49,8 +49,7 @@ python bot.py
 1. `python bot.py` çalışsın → `data/luci/QUEUE_PATH.txt` oluşur.
 2. `scripts/withdraw_worker.lua` içinde `QUEUE_BASE` = bu klasörün tam yolu  
    Örn: `C:/Users/Administrator/Desktop/lock/data/luci`
-3. Scripti Lucifer'de çalıştır; Log'da `Claimed file order #...` görünür.
-4. `/setworlds` ile withdraw dünyalarını ayarla.
+3. Scripti Lucifer'de çalıştır; Log'da `Claimed pending #...` görünür.
 
 ## Discord komutları
 
@@ -61,25 +60,29 @@ python bot.py
 | `/deposit` | SOL/LTC adresleri |
 | `/checkdeposit` | Manuel tarama |
 | `/prices` | Fiyat listesi |
-| `/buy` | WL/DL/BGL satın al |
+| `/buy` | WL/DL/BGL satın al (GrowID + dünya adı) |
 | `/setprices` | Admin fiyat |
-| `/setworlds` | Admin withdraw dünyaları |
+| `/listorders` | Admin aktif siparişler |
 | `/addbalance` | Admin manuel bakiye |
 
 ## Akış (satın alma)
 
-1. Kullanıcı `/buy` → miktar → GrowID (veya kayıtlı GrowID).
-2. Sistem 5 dünyadan birini rastgele atar.
-3. Luci dünyaya girer; GrowID eşleşmeyen oyuncular için ban/kick dener (`auto_ban`).
-4. Eşleşen oyuncuya trade → miktarı koyar → lock/accept (`auto_accept` bot tarafında).
-5. Kullanıcı trade + onay ekranını kabul eder.
-6. Luci `results/{id}.json` yazar → bot işler → Discord **DM**.
+1. Kullanıcı `/buy` → miktar → GrowID + **bağış kutusunun olduğu dünya** adı.
+2. Luci botu o dünyaya girer.
+3. Bot erişebildiği bir **Donation Box** arar (`hasAccess`).
+4. Bulursa gerekli WL/DL/BGL miktarını kutuya bırakır.
+5. Luci `results/{id}.json` yazar → bot işler → Discord **DM**.
+
+### Kullanıcı için gereksinimler
+
+- Dünyada en az bir **Donation Box** olmalı.
+- Botun kutuya ulaşabildiği bir alan olmalı (kilit/erişim).
+- Kapı varsa dünya adını `MYWORLD|DOORID` formatında yazabilirsin.
 
 ## Notlar
 
 - Yatırım motoru flipbot’taki SOL/LTC HD cüzdan deseninin sadeleştirilmiş halidir.
-- Trade paketleri sunucu sürümüne göre değişebilir; `withdraw_worker.lua` içindeki `trade_add_item` / `trade_lock` satırlarını Luci loglarından ince ayar yap.
-- Üretimde `API_HOST=0.0.0.0` sadece güvenilir ağda; `LUCI_API_KEY` güçlü olsun.
+- Donation dialog paketleri sunucu sürümüne göre değişebilir; loglarda `Donation dialog:` satırını kontrol et.
 
 ## Lisans
 

@@ -1,18 +1,18 @@
 --[[
-  GT Lock Shop — Luci withdraw (dosya kuyruğu)
-  QUEUE_BASE = bot.py ile aynı data/luci klasörü
+  GT Lock Shop — Luci donation box withdraw (dosya kuyruğu)
+  Sipariş: kullanıcının dünyasına git → erişilebilir donation box bul → item bırak
 ]]
 
 local QUEUE_BASE = "C:/Users/Administrator/Desktop/lock/data/luci"
 local POLL_MS = 2500
 local ORDER_TIMEOUT_MS = 120000
 local WARP_RETRY_MS = 5000
+local MAX_STACK = 200
 
 local ITEM_WL = 242
 local ITEM_DL = 1796
 local ITEM_BGL = 7188
 
--- Yollar (init_paths sonradan günceller)
 local PENDING_DIR = ""
 local PROCESSING_DIR = ""
 local RESULTS_DIR = ""
@@ -21,27 +21,17 @@ local ACTIVE_FILE = ""
 
 local bot = getBot()
 bot.auto_reconnect = true
-bot.auto_accept = true
+bot.auto_accept = false
 bot.auto_ban = false
 
 local state = {
   busy = false,
   order = nil,
-  expected_norm = "",
-  trade_phase = "idle",
-  trade_done = false,
-  trade_cmd_sent = false,
-  trade_open = false,
-  trade_item_id = 0,
-  trade_qty = 0,
-  trade_items_placed = false,
-  trade_locked = false,
-  trade_add_attempts = 0,
-  last_trade_add_ms = 0,
+  deposit_done = false,
+  donate_dialog_name = "",
   order_started_ms = 0,
 }
 
--- Global fonksiyonlar: Lucifer runThread local upvalue taşımıyor
 function GT_log(msg)
   local line = "[GT-Shop] " .. tostring(msg)
   print(line)
@@ -64,16 +54,6 @@ function GT_init_paths()
   INDEX_FILE = base .. "/pending_index.txt"
   ACTIVE_FILE = base .. "/processing/active.txt"
   GT_log("Queue path: " .. base)
-end
-
-function GT_norm_name(name)
-  if not name then return "" end
-  local s = tostring(name)
-  local ok, cleaned = pcall(function() return removeColor(s) end)
-  if ok and cleaned then s = cleaned end
-  s = string.lower(s)
-  s = s:gsub("`", ""):gsub("[^%w]", "")
-  return s
 end
 
 function GT_now_ms()
@@ -201,14 +181,6 @@ function GT_claim_next_order()
   return GT_claim_from_processing()
 end
 
-function GT_player_matches(player)
-  if not player or player.isLocalPlayer then return false end
-  local expected = state.expected_norm
-  if GT_norm_name(player.name) == expected then return true end
-  if player.altName and GT_norm_name(player.altName) == expected then return true end
-  return false
-end
-
 function GT_inventory_count(item_id)
   local inv = bot:getInventory()
   if not inv then return 0 end
@@ -254,148 +226,136 @@ function GT_warp_to_world(world_field)
   return false
 end
 
-function GT_request_trade(growid)
-  local gid = tostring(growid or ""):gsub("%s+", "")
-  if gid == "" then return false end
-  local cmd = "/trade " .. gid
-  GT_log("Say: " .. cmd)
-  bot:say(cmd)
-  return true
+function GT_tile_has_access(x, y)
+  local ok, result = pcall(function()
+    return hasAccess(x, y)
+  end)
+  return ok and result == true
 end
 
-function GT_find_buyer()
+function GT_is_donation_box(fg)
+  if not fg or fg == 0 then return false end
+  local ok, info = pcall(function() return getInfo(fg) end)
+  if not ok or not info then return false end
+  local name = tostring(info.name or ""):lower()
+  if name:find("seed", 1, true) then return false end
+  return name:find("donation box", 1, true) ~= nil
+end
+
+function GT_find_accessible_donation_boxes()
   local world = bot:getWorld()
-  if not world then return nil end
-  for _, p in pairs(world:getPlayers()) do
-    if GT_player_matches(p) then return p end
+  if not world then return {} end
+  local boxes = {}
+  for _, tile in pairs(world:getTiles()) do
+    if GT_is_donation_box(tile.fg) and GT_tile_has_access(tile.x, tile.y) then
+      boxes[#boxes + 1] = { x = tile.x, y = tile.y, fg = tile.fg }
+    end
   end
-  return nil
+  return boxes
 end
 
-function GT_trade_add_item(item_id, count)
-  count = tonumber(count) or 1
-  item_id = tonumber(item_id) or ITEM_WL
-  GT_log("Adding to trade: item=" .. item_id .. " x" .. count)
+function GT_move_near_tile(x, y)
+  local offsets = {
+    { 0, 1 }, { 0, -1 }, { 1, 0 }, { -1, 0 },
+    { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 },
+  }
+  for _, off in ipairs(offsets) do
+    local tx, ty = x + off[1], y + off[2]
+    pcall(function() bot:findPath(tx, ty) end)
+    sleep(700)
+    if bot:isInTile(tx, ty) then return true end
+  end
+  pcall(function() bot:findPath(x, y) end)
+  sleep(700)
+  return bot:isInTile(x, y)
+end
 
-  -- Yöntem 1: doğrudan trade_item (en yaygın)
-  bot:sendPacket(2, "action|trade_item\nitemID|" .. item_id .. "\ncount|" .. count)
-  sleep(350)
+function GT_send_donate_packets(box_x, box_y, item_id, count)
+  local dlg = state.donate_dialog_name
+  local names = {}
+  if dlg ~= "" then names[#names + 1] = dlg end
+  names[#names + 1] = "donation_box"
+  names[#names + 1] = "donation_box_edit"
+  names[#names + 1] = "donate"
+  names[#names + 1] = "donation"
 
-  -- Yöntem 2: dialog_return
-  bot:sendPacket(2, "action|dialog_return\ndialog_name|trade_item\nitemID|" .. item_id .. "\ncount|" .. count)
-  sleep(350)
-
-  -- Yöntem 3: tradescreen dialog
-  bot:sendPacket(2, "action|dialog_return\ndialog_name|tradescreen\nitemID|" .. item_id .. "\ncount|" .. count)
-  sleep(350)
-
-  -- Yöntem 4: tek tek ekle (WL gibi stackable)
-  if count > 1 and count <= 40 then
-    for i = 1, count do
-      bot:sendPacket(2, "action|trade_item\nitemID|" .. item_id .. "\ncount|1")
-      sleep(180)
+  local seen = {}
+  for _, dname in ipairs(names) do
+    if not seen[dname] then
+      seen[dname] = true
+      local variants = {
+        string.format(
+          "action|dialog_return\ndialog_name|%s\nitemID|%d\ncount|%d\ntilex|%d|\ntiley|%d|\n",
+          dname, item_id, count, box_x, box_y
+        ),
+        string.format(
+          "action|dialog_return\ndialog_name|%s\nbuttonClicked|give\nitemID|%d\ncount|%d\ntilex|%d|\ntiley|%d|\n",
+          dname, item_id, count, box_x, box_y
+        ),
+        string.format(
+          "action|dialog_return\ndialog_name|%s\nbuttonClicked|donate\nitemID|%d\ncount|%d\ntilex|%d|\ntiley|%d|\n",
+          dname, item_id, count, box_x, box_y
+        ),
+      }
+      for _, pkt in ipairs(variants) do
+        bot:sendPacket(2, pkt)
+        sleep(400)
+      end
     end
   end
 end
 
-function GT_trade_lock()
-  GT_log("Trade lock")
-  bot:sendPacket(2, "action|dialog_return\ndialog_name|trade_confirm\nbuttonClicked|lock\n")
-  bot:sendPacket(2, "action|dialog_return\ndialog_name|tradescreen\nbuttonClicked|lock\n")
+function GT_donate_chunk(box_x, box_y, item_id, count)
+  local before = GT_inventory_count(item_id)
+  if before < count then return false end
+
+  state.deposit_done = false
+  state.donate_dialog_name = ""
+
+  GT_log("Donate " .. count .. "x item " .. item_id .. " @ " .. box_x .. "," .. box_y)
+  if not GT_move_near_tile(box_x, box_y) then
+    GT_log("Could not reach donation box tile")
+  end
+
+  bot:wrench(box_x, box_y)
+  sleep(800)
+
+  GT_send_donate_packets(box_x, box_y, item_id, count)
+  sleep(600)
+
+  listenEvents(1)
+
+  local after = GT_inventory_count(item_id)
+  if after <= before - count then
+    return true
+  end
+  if state.deposit_done then
+    return true
+  end
+  return after < before
 end
 
-function GT_trade_accept()
-  GT_log("Trade accept")
-  bot:sendPacket(2, "action|dialog_return\ndialog_name|trade_confirm\nbuttonClicked|accept\n")
-  bot:sendPacket(2, "action|dialog_return\ndialog_name|tradescreen\nbuttonClicked|accept\n")
-end
-
-function GT_on_trade_status(payload)
-  if not payload or payload == "" then return end
-  state.trade_open = true
-
-  local slot_item, slot_count = payload:match("add_slot|(%d+)|(%d+)")
-  if slot_item then
-    local sid = tonumber(slot_item)
-    local sc = tonumber(slot_count) or 0
-    if sid == state.trade_item_id and sc >= state.trade_qty then
-      state.trade_items_placed = true
-      GT_log("Trade slot OK: " .. sid .. " x" .. sc)
-    elseif sid == state.trade_item_id and sc > 0 then
-      GT_log("Trade slot partial: " .. sc .. "/" .. state.trade_qty)
+function GT_donate_all(box, item_id, total_qty)
+  local remaining = total_qty
+  while remaining > 0 do
+    if GT_order_expired() then return false, "order_timeout_2min" end
+    local chunk = remaining
+    if chunk > MAX_STACK then chunk = MAX_STACK end
+    local ok = GT_donate_chunk(box.x, box.y, item_id, chunk)
+    if not ok then
+      return false, "donation_failed"
     end
+    remaining = remaining - chunk
+    sleep(500)
   end
-
-  if payload:find("locked|1") and state.trade_items_placed then
-    state.trade_locked = true
-  end
-end
-
-function GT_on_trade_console(msg)
-  if not msg or msg == "" then return end
-  local low = msg:lower()
-  if low:find("trade change", 1, true) and low:find("added", 1, true) then
-    state.trade_items_placed = true
-    GT_log("Trade items confirmed (console)")
-  end
-  if low:find("trade complete", 1, true) or low:find("trade successful", 1, true) then
-    state.trade_done = true
-  end
-end
-
-function GT_trade_try_add_items()
-  if state.trade_items_placed or state.trade_item_id <= 0 then return end
-  if state.trade_add_attempts >= 8 then return end
-  local now = GT_now_ms()
-  if state.trade_add_attempts > 0 and (now - state.last_trade_add_ms) < 2000 then return end
-  state.trade_add_attempts = state.trade_add_attempts + 1
-  state.last_trade_add_ms = now
-  GT_log("Trade add attempt " .. state.trade_add_attempts .. "/8")
-  GT_trade_add_item(state.trade_item_id, state.trade_qty)
-end
-
-function GT_trade_tick()
-  if not state.order or state.trade_done then return end
-  if state.trade_phase ~= "trading" then return end
-
-  if state.trade_open and not state.trade_items_placed then
-    GT_trade_try_add_items()
-    return
-  end
-
-  -- Trade penceresi event gelmezse 3 sn sonra yine dene
-  if state.trade_cmd_sent and not state.trade_items_placed and not state.trade_open then
-    local elapsed = GT_now_ms() - state.last_trade_add_ms
-    if state.trade_add_attempts == 0 or elapsed > 3000 then
-      state.trade_open = true
-      GT_log("Trade open timeout — forcing item add")
-      GT_trade_try_add_items()
-    end
-    return
-  end
-
-  if state.trade_items_placed and not state.trade_locked then
-    GT_trade_lock()
-    state.trade_locked = true
-    sleep(800)
-    GT_trade_accept()
-  end
+  return true, ""
 end
 
 function GT_clear_state()
   state.busy = false
   state.order = nil
-  state.trade_phase = "idle"
-  state.trade_done = false
-  state.trade_cmd_sent = false
-  state.trade_open = false
-  state.trade_item_id = 0
-  state.trade_qty = 0
-  state.trade_items_placed = false
-  state.trade_locked = false
-  state.trade_add_attempts = 0
-  state.last_trade_add_ms = 0
-  state.expected_norm = ""
+  state.deposit_done = false
+  state.donate_dialog_name = ""
   state.order_started_ms = 0
 end
 
@@ -416,26 +376,16 @@ end
 function GT_run_order(order)
   state.busy = true
   state.order = order
-  state.expected_norm = GT_norm_name(order.growid)
-  state.trade_phase = "waiting_player"
-  state.trade_done = false
-  state.trade_cmd_sent = false
-  state.trade_open = false
+  state.deposit_done = false
+  state.donate_dialog_name = ""
+  state.order_started_ms = GT_now_ms()
 
   local item_id = order.item_id or GT_item_id_for_type(order.item_type)
   local qty = tonumber(order.quantity) or 1
   local world_name = GT_split_world(order.world_name)
 
-  state.trade_item_id = item_id
-  state.trade_qty = qty
-  state.trade_items_placed = false
-  state.trade_locked = false
-  state.trade_add_attempts = 0
-  state.last_trade_add_ms = 0
-  state.order_started_ms = GT_now_ms()
-
-  if state.expected_norm == "" then
-    GT_finish_fail(order, "invalid_growid")
+  if world_name == "" then
+    GT_finish_fail(order, "invalid_world")
     return
   end
   if GT_inventory_count(item_id) < qty then
@@ -447,65 +397,51 @@ function GT_run_order(order)
     return
   end
 
-  GT_log(string.format("Order #%d world=%s growid=%s qty=%d", order.id, order.world_name, order.growid, qty))
+  GT_log(string.format(
+    "Order #%d world=%s growid=%s qty=%d item=%d",
+    order.id, order.world_name, order.growid, qty, item_id
+  ))
 
   if not GT_warp_to_world(order.world_name) then
     GT_finish_fail(order, "warp_failed")
     return
   end
 
-  while state.order and not GT_order_expired() do
-    if not bot:isInWorld(world_name) then
-      GT_warp_to_world(order.world_name)
-    else
-      if state.trade_done then
-        GT_finish_success(order)
-        return
-      end
-      local buyer = GT_find_buyer()
-      if buyer and not state.trade_cmd_sent then
-        state.trade_phase = "trading"
-        state.trade_cmd_sent = true
-        GT_log("Buyer in world: " .. tostring(buyer.name))
-        GT_request_trade(order.growid)
-      elseif state.trade_phase == "trading" then
-        GT_trade_tick()
-      elseif state.trade_phase == "waiting_player" and not state.trade_cmd_sent then
-        state.trade_cmd_sent = true
-        state.trade_phase = "trading"
-        GT_request_trade(order.growid)
-      end
-      sleep(500)
-    end
+  sleep(1500)
+  local boxes = GT_find_accessible_donation_boxes()
+  if #boxes == 0 then
+    GT_finish_fail(order, "no_donation_box")
+    return
   end
 
-  if state.order then
-    if state.trade_done then
-      GT_finish_success(order)
-    else
-      GT_finish_fail(order, "order_timeout_2min")
-    end
+  GT_log("Found " .. #boxes .. " accessible donation box(es)")
+  local box = boxes[1]
+  local ok, reason = GT_donate_all(box, item_id, qty)
+  if ok then
+    GT_finish_success(order)
+  else
+    GT_finish_fail(order, reason ~= "" and reason or "donation_failed")
   end
 end
 
 function on_variantlist(variant, netid)
   if not state.order then return end
   local head = variant:get(0):getString()
-  if head == "OnTradeStatus" then
-    state.trade_phase = "trading"
-    local payload = ""
-    pcall(function() payload = variant:get(4):getString() or "" end)
-    GT_on_trade_status(payload)
+  if head == "OnDialogRequest" then
+    local dlg = variant:get(1):getString() or ""
+    local low = dlg:lower()
+    if low:find("donat", 1, true) then
+      local dname = dlg:match("end_dialog|([^|\n]+)|")
+      if dname then
+        state.donate_dialog_name = dname
+        GT_log("Donation dialog: " .. dname)
+      end
+    end
   elseif head == "OnConsoleMessage" then
-    GT_on_trade_console(variant:get(1):getString() or "")
-  elseif head == "OnForceTradeEnd" then
-    if state.trade_phase == "trading" and not state.trade_done then
-      GT_log("Trade cancelled")
-      state.trade_open = false
-      state.trade_items_placed = false
-      state.trade_locked = false
-      state.trade_add_attempts = 0
-      state.last_trade_add_ms = 0
+    local msg = variant:get(1):getString() or ""
+    local low = msg:lower()
+    if low:find("donated", 1, true) or low:find("donate", 1, true) then
+      state.deposit_done = true
     end
   end
 end
@@ -518,7 +454,6 @@ while true do
   if not state.busy then
     local order = GT_claim_next_order()
     if order then
-      -- runThread kullanma: Luci thread'de local upvalue kırılıyor
       GT_run_order(order)
     end
   end

@@ -179,7 +179,7 @@ class Admin(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="setworlds", description="[Admin] Withdraw dünyaları (virgülle)")
+    @app_commands.command(name="setworlds", description="[Admin] Eski withdraw dünyaları (artık kullanılmıyor)")
     @app_commands.describe(worlds="Örn: SHOP1,SHOP2,SHOP3")
     @app_commands.guilds(*(_ADMIN_GUILDS or []))
     async def setworlds(self, interaction: discord.Interaction, worlds: str):

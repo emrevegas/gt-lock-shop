@@ -13,20 +13,31 @@ from modules.shop import DISPLAY, ItemType, order_total
 log = logging.getLogger("gt-lock-shop")
 
 
-class GrowidModal(discord.ui.Modal, title="GrowID"):
-    def __init__(self, parent: "BuyConfirmView"):
+class PurchaseModal(discord.ui.Modal, title="Sipariş bilgileri"):
+    def __init__(self, parent: "BuyConfirmView", *, growid_prefill: str = ""):
         super().__init__()
         self.parent = parent
         self.growid_input = discord.ui.TextInput(
             label="GrowID",
             placeholder="Oyun içi kullanıcı adın",
+            default=growid_prefill or None,
             min_length=3,
             max_length=20,
+            required=True,
+        )
+        self.world_input = discord.ui.TextInput(
+            label="Dünya adı",
+            placeholder="Bağış kutusunun olduğu dünya (örn: MYWORLD veya MYWORLD|DOOR)",
+            min_length=1,
+            max_length=30,
+            required=True,
         )
         self.add_item(self.growid_input)
+        self.add_item(self.world_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         self.parent.growid = self.growid_input.value.strip()
+        self.parent.world_name = self.world_input.value.strip()
         await interaction.response.defer()
         await self.parent.finish_purchase(interaction)
 
@@ -45,6 +56,7 @@ class BuyConfirmView(discord.ui.View):
         self.quantity = quantity
         self.total = total
         self.growid: str | None = None
+        self.world_name: str | None = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -54,18 +66,15 @@ class BuyConfirmView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="GrowID gir & Satın al", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="GrowID & Dünya gir", style=discord.ButtonStyle.green)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         saved = await db.get_growid(self.user_id)
-        if saved:
-            self.growid = saved
-            await interaction.response.defer()
-            await self.finish_purchase(interaction)
-        else:
-            await interaction.response.send_modal(GrowidModal(self))
+        await interaction.response.send_modal(
+            PurchaseModal(self, growid_prefill=saved or "")
+        )
 
     async def finish_purchase(self, interaction: discord.Interaction):
-        if not self.growid:
+        if not self.growid or not self.world_name:
             return
         if not await db.deduct_balance(self.user_id, self.total):
             msg = "Yetersiz bakiye."
@@ -77,6 +86,7 @@ class BuyConfirmView(discord.ui.View):
             order = await orders.create_order(
                 self.user_id,
                 self.growid,
+                self.world_name,
                 self.item_type,
                 self.quantity,
                 self.total,
@@ -99,8 +109,9 @@ class BuyConfirmView(discord.ui.View):
             f"🛒 Sipariş **#{order['id']}** oluşturuldu.\n"
             f"**{self.quantity}x** {DISPLAY[self.item_type]}\n"
             f"GrowID: `{self.growid}`\n"
-            f"Dünya: `{order['world_name']}` (bot seni bekliyor)\n\n"
-            f"Luci botu trade isteği atacak; kabul edip onay ekranını da onayla."
+            f"Dünya: `{order['world_name']}`\n\n"
+            f"Bot dünyana gidip **erişebildiği bir bağış kutusuna** item bırakacak.\n"
+            f"Dünyanda erişilebilir bir **Donation Box** olduğundan emin ol."
         )
         for child in self.children:
             child.disabled = True
@@ -144,7 +155,7 @@ class Shop(commands.Cog):
         view = BuyConfirmView(interaction.user.id, item_type, quantity, total)
         await interaction.response.send_message(
             f"**{quantity}x** {DISPLAY[item_type]} — Toplam: **{total:.2f}**\n"
-            f"Onayla ve GrowID gir.",
+            f"Onayla; GrowID ve **bağış kutusunun olduğu dünya** adını gir.",
             view=view,
             ephemeral=True,
         )

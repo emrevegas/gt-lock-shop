@@ -31,15 +31,29 @@ def pick_world(worlds: list[str]) -> str:
     return random.choice(worlds)
 
 
+def normalize_world_name(world_name: str) -> str:
+    """WORLD or WORLD|DOOR — uppercase, trimmed."""
+    raw = (world_name or "").strip().upper()
+    if not raw:
+        raise ValueError("Dünya adı boş olamaz")
+    name, _, door = raw.partition("|")
+    name = name.strip()
+    if len(name) < 1 or len(name) > 24:
+        raise ValueError("Geçersiz dünya adı")
+    if door.strip():
+        return f"{name}|{door.strip()}"
+    return name
+
+
 async def create_order(
     user_id: int,
     growid: str,
+    world_name: str,
     item_type: ItemType,
     quantity: int,
     price_paid: float,
 ) -> dict[str, Any]:
-    worlds = await get_withdraw_worlds()
-    world = pick_world(worlds)
+    world = normalize_world_name(world_name)
     conn = db.get_conn()
     now = int(time.time())
     cur = await conn.execute(
