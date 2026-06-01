@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 import config
 from database import db
-from modules import orders
+from modules import luci_status, orders
 
 log = logging.getLogger("gt-lock-shop")
 
@@ -77,6 +77,7 @@ async def health():
 @app.get("/api/orders/next", dependencies=[Depends(verify_key)])
 async def next_order():
     global _last_null_poll_log
+    luci_status.touch_poll()
     counts = await orders.count_orders_by_status()
     order = await orders.claim_next_pending()
     if not order:
@@ -105,6 +106,7 @@ async def order_stats():
 
 @app.get("/api/orders/pending", dependencies=[Depends(verify_key)])
 async def pending_orders():
+    luci_status.touch_poll()
     """Siparişleri claim etmeden listele (debug)."""
     return {
         "orders": await orders.list_active_orders(limit=50),

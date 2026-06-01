@@ -70,6 +70,8 @@ class GTLockBot(commands.Bot):
             self.order_notify.start()
         if not self.order_queue_log.is_running():
             self.order_queue_log.start()
+        if not self.luci_watchdog.is_running():
+            self.luci_watchdog.start()
 
     @tasks.loop(minutes=2.0)
     async def deposit_monitor(self):
@@ -164,6 +166,39 @@ class GTLockBot(commands.Bot):
 
     @order_queue_log.before_loop
     async def before_order_queue_log(self):
+        await self.wait_until_ready()
+
+    @tasks.loop(seconds=30.0)
+    async def luci_watchdog(self):
+        import time
+
+        from modules import luci_status
+        from modules.orders import count_orders_by_status
+
+        counts = await count_orders_by_status()
+        pending = int(counts.get("pending", 0))
+        processing = int(counts.get("processing", 0))
+        if pending == 0 and processing == 0:
+            return
+
+        since = luci_status.seconds_since_poll()
+        if since is None:
+            log.warning(
+                "[Luci] Sipariş bekliyor (pending=%s processing=%s) ama Luci API'ye HİÇ gelmedi. "
+                "Lucifer'de scripts/withdraw_worker.lua çalıştır; API_URL ve API_KEY kontrol et.",
+                pending,
+                processing,
+            )
+        elif since > 45:
+            log.warning(
+                "[Luci] %ds'dir API isteği yok (pending=%s processing=%s). Script durmuş olabilir.",
+                int(since),
+                pending,
+                processing,
+            )
+
+    @luci_watchdog.before_loop
+    async def before_luci_watchdog(self):
         await self.wait_until_ready()
 
 
