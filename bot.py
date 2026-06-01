@@ -90,8 +90,11 @@ class GTLockBot(commands.Bot):
             user = self.get_user(int(order["user_id"]))
             if user:
                 try:
+                    reason = order.get("fail_reason") or "bilinmiyor"
+                    if reason == "order_timeout_2min":
+                        reason = "2 dakika içinde trade tamamlanmadı"
                     await user.send(
-                        f"❌ Sipariş `#{order['id']}` başarısız: {order.get('fail_reason') or 'bilinmiyor'}\n"
+                        f"❌ Sipariş `#{order['id']}` başarısız: {reason}\n"
                         f"Bakiye iade edildi."
                     )
                 except discord.HTTPException:

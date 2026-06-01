@@ -134,7 +134,7 @@ async def list_failed_unnotified() -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-async def reset_stale_processing(max_age_sec: int = 600) -> int:
+async def reset_stale_processing(max_age_sec: int = 120) -> int:
     """Re-queue orders stuck in processing (bot crash)."""
     cutoff = int(time.time()) - max_age_sec
     conn = db.get_conn()

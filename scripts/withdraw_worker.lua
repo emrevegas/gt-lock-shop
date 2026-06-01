@@ -1,20 +1,13 @@
 --[[
   GT Lock Shop — Lucifer (Luci) withdraw worker
-  Discord bot API ile sipariş alır, dünyaya girer, eşleşen GrowID'ye trade atar.
-
-  Kurulum:
-  1. Discord bot + API çalışıyor olmalı (bot.py, LUCI_API_KEY)
-  2. Bu dosyayı Luci'de bot scripti olarak çalıştır
-  3. API_URL ve API_KEY değerlerini düzenle
 ]]
 
 local API_URL = "http://127.0.0.1:8765"
 local API_KEY = "change-me-to-a-long-random-secret"
 local POLL_MS = 2500
-local ENTER_WORLD_TIMEOUT_MS = 120000
-local TRADE_TIMEOUT_MS = 180000
+-- Tüm sipariş (dünyaya gir + trade) en fazla 2 dakika
+local ORDER_TIMEOUT_MS = 120000
 
--- Growtopia item IDs
 local ITEM_WL = 242
 local ITEM_DL = 1796
 local ITEM_BGL = 7188
@@ -22,14 +15,15 @@ local ITEM_BGL = 7188
 local bot = getBot()
 bot.auto_reconnect = true
 bot.auto_accept = true
-bot.auto_ban = true
+bot.auto_ban = false -- yanlış banları önler; sadece isim eşleşmesi ile trade
 
 local state = {
   order = nil,
-  expected_growid = "",
+  expected_norm = "",
   trade_netid = nil,
-  trade_phase = "idle", -- idle | waiting_player | trading | done
-  items_placed = false,
+  trade_phase = "idle",
+  trade_done = false,
+  order_started_ms = 0,
 }
 
 local function log(msg)
@@ -37,9 +31,26 @@ local function log(msg)
   print("[GT-Shop] " .. tostring(msg))
 end
 
+-- Büyük/küçük harf duyarsız; renk kodu, backtick, boşluk temizlenir
 local function norm_name(name)
   if not name then return "" end
-  return string.lower(removeColor(name)):gsub("%s+", "")
+  local s = removeColor(tostring(name))
+  s = s:gsub("`", ""):gsub("[^%w]", ""):lower()
+  return s
+end
+
+local function order_expired()
+  if state.order_started_ms <= 0 then return false end
+  return (os.clock() * 1000 - state.order_started_ms) >= ORDER_TIMEOUT_MS
+end
+
+local function player_matches_buyer(player)
+  if not player or player.isLocalPlayer then return false end
+  local expected = state.expected_norm
+  if expected == "" then return false end
+  if norm_name(player.name) == expected then return true end
+  if player.altName and norm_name(player.altName) == expected then return true end
+  return false
 end
 
 local function http_get(path)
@@ -70,7 +81,6 @@ local function http_post(path, json_body)
   return res.body, nil
 end
 
--- Minimal JSON helpers (order fields only)
 local function parse_order_json(body)
   if not body or body == "" then return nil end
   if not body:find('"order"%s*:%s*null') then
@@ -124,31 +134,11 @@ local function inventory_count(item_id)
   return inv:findItem(item_id) or 0
 end
 
-local function kick_or_ban_intruders()
-  local world = bot:getWorld()
-  if not world then return end
-  local expected = norm_name(state.expected_growid)
-  for _, p in pairs(world:getPlayers()) do
-    if not p.isLocalPlayer then
-      local n = norm_name(p.name)
-      if n ~= expected then
-        log("Intruder: " .. removeColor(p.name) .. " — auto_ban enabled")
-        -- Luci auto_ban + wrench ban fallback
-        bot:wrenchPlayer(p.netid)
-        sleep(400)
-        bot:sendPacket(2, "action|dialog_return\ndialog_name|popup\nbuttonClicked|ban\n")
-        sleep(300)
-      end
-    end
-  end
-end
-
 local function find_expected_player()
   local world = bot:getWorld()
   if not world then return nil end
-  local expected = norm_name(state.expected_growid)
   for _, p in pairs(world:getPlayers()) do
-    if not p.isLocalPlayer and norm_name(p.name) == expected then
+    if player_matches_buyer(p) then
       return p
     end
   end
@@ -156,7 +146,6 @@ local function find_expected_player()
 end
 
 local function trade_add_item(item_id, count)
-  -- Trade penceresine item ekle (Growtopia trade dialog)
   for i = 1, count do
     bot:sendPacket(2, string.format(
       "action|dialog_return\ndialog_name|trade_item\nitemID|%d\ncount|1\n",
@@ -174,98 +163,108 @@ local function trade_accept()
   bot:sendPacket(2, "action|dialog_return\ndialog_name|trade_confirm\nbuttonClicked|accept\n")
 end
 
+local function finish_order_fail(order, reason)
+  log(reason)
+  api_fail(order.id, reason)
+  state.order = nil
+  state.trade_phase = "idle"
+  state.trade_done = false
+  state.expected_norm = ""
+  state.order_started_ms = 0
+end
+
+local function finish_order_success(order)
+  api_complete(order.id)
+  log("Order #" .. order.id .. " completed")
+  state.order = nil
+  state.trade_phase = "idle"
+  state.trade_done = false
+  state.expected_norm = ""
+  state.order_started_ms = 0
+end
+
 local function run_order(order)
   state.order = order
-  state.expected_growid = order.growid
+  state.expected_norm = norm_name(order.growid)
   state.trade_phase = "waiting_player"
-  state.items_placed = false
+  state.trade_done = false
   state.trade_netid = nil
+  state.order_started_ms = os.clock() * 1000
 
   local item_id = order.item_id or item_id_for_type(order.item_type)
   local qty = tonumber(order.quantity) or 1
 
-  if inventory_count(item_id) < qty then
-    log("Not enough items in inventory")
-    api_fail(order.id, "insufficient_bot_stock")
-    state.order = nil
+  if state.expected_norm == "" then
+    finish_order_fail(order, "invalid_growid")
     return
   end
 
-  log(string.format("Order #%d → warp %s for %s x%d", order.id, order.world_name, order.growid, qty))
+  if inventory_count(item_id) < qty then
+    finish_order_fail(order, "insufficient_bot_stock")
+    return
+  end
+
+  log(string.format(
+    "Order #%d → %s | buyer=%s (norm=%s) | 2min timeout",
+    order.id, order.world_name, order.growid, state.expected_norm
+  ))
   bot:warp(order.world_name)
 
-  local deadline = os.clock() * 1000 + ENTER_WORLD_TIMEOUT_MS
-  while os.clock() * 1000 < deadline do
+  while state.order and not order_expired() do
     if not bot:isInWorld(order.world_name) then
-      sleep(1000)
+      sleep(800)
     else
-      kick_or_ban_intruders()
+      if state.trade_done then
+        finish_order_success(order)
+        return
+      end
+
       local buyer = find_expected_player()
-      if buyer then
+      if buyer and state.trade_phase == "waiting_player" then
         state.trade_netid = buyer.netid
         state.trade_phase = "trading"
-        log("Buyer found, requesting trade: " .. removeColor(buyer.name))
+        log("Buyer matched: " .. removeColor(buyer.name))
         bot:wrenchPlayer(buyer.netid)
         sleep(1500)
-
         trade_add_item(item_id, qty)
         sleep(800)
         trade_lock()
         sleep(500)
         trade_accept()
-        state.items_placed = true
-
-        local trade_deadline = os.clock() * 1000 + TRADE_TIMEOUT_MS
-        while os.clock() * 1000 < trade_deadline do
-          sleep(500)
-          kick_or_ban_intruders()
-        end
-
-        api_complete(order.id)
-        log("Order completed (API notified)")
-        state.order = nil
-        state.trade_phase = "idle"
-        return
       end
-      sleep(800)
+
+      sleep(500)
     end
   end
 
-  log("Timeout waiting for buyer")
-  api_fail(order.id, "buyer_timeout")
-  state.order = nil
-  state.trade_phase = "idle"
+  if state.order then
+    if state.trade_done then
+      finish_order_success(order)
+    else
+      finish_order_fail(order, "order_timeout_2min")
+    end
+  end
 end
 
--- Trade tamamlandığında konsol / variant ile doğrula
 function on_variantlist(variant, netid)
   if not state.order then return end
   local head = variant:get(0):getString()
-  if head == "OnTradeStatus" then
-    local payload = variant:get(4):getString() or ""
-    if payload:find("accepted|1") and payload:find("locked|1") then
-      -- Her iki taraf kilitlediğinde trade tamamlanır; bazı sürümlerde OnDialogRequest gelir
-      log("Trade status: locked+accepted detected")
-    end
-  elseif head == "OnConsoleMessage" then
+  if head == "OnConsoleMessage" then
     local msg = variant:get(1):getString() or ""
-    if msg:find("Trade complete") or msg:find("trade complete") then
-      if state.order then
-        api_complete(state.order.id)
-        log("Trade complete (console)")
-        state.order = nil
-      end
+    local low = msg:lower()
+    if low:find("trade complete") or low:find("trade successful") or low:find("accepted the trade") then
+      state.trade_done = true
+      log("Trade complete detected")
     end
   elseif head == "OnForceTradeEnd" then
-    if state.order and state.trade_phase == "trading" then
-      log("Trade force-ended")
+    if state.trade_phase == "trading" and not state.trade_done then
+      log("Trade cancelled")
     end
   end
 end
 
 addEvent(Event.variantlist, on_variantlist)
 
--- Ana döngü: API'den sipariş çek
 while true do
   if not state.order then
     local order = fetch_next_order()
