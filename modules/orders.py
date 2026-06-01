@@ -1,0 +1,151 @@
+"""Withdraw order queue for Luci worker."""
+
+import random
+import time
+from typing import Any, Optional
+
+from config import WITHDRAW_WORLDS
+from database import db
+from modules.shop import ItemType, item_id_for
+
+
+async def get_withdraw_worlds() -> list[str]:
+    stored = await db.get_setting("withdraw_worlds")
+    if isinstance(stored, list) and stored:
+        return [str(w).strip().upper() for w in stored if str(w).strip()]
+    return list(WITHDRAW_WORLDS)
+
+
+async def set_withdraw_worlds(worlds: list[str]) -> list[str]:
+    clean = [w.strip().upper() for w in worlds if w and w.strip()]
+    await db.set_setting("withdraw_worlds", clean)
+    return clean
+
+
+def pick_world(worlds: list[str]) -> str:
+    if not worlds:
+        raise ValueError("No withdraw worlds configured")
+    return random.choice(worlds)
+
+
+async def create_order(
+    user_id: int,
+    growid: str,
+    item_type: ItemType,
+    quantity: int,
+    price_paid: float,
+) -> dict[str, Any]:
+    worlds = await get_withdraw_worlds()
+    world = pick_world(worlds)
+    conn = db.get_conn()
+    now = int(time.time())
+    cur = await conn.execute(
+        """
+        INSERT INTO orders (user_id, growid, item_type, quantity, price_paid, world_name, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+        """,
+        (
+            user_id,
+            growid.strip(),
+            item_type,
+            int(quantity),
+            float(price_paid),
+            world,
+            now,
+        ),
+    )
+    await conn.commit()
+    order_id = cur.lastrowid
+    return await get_order(order_id)
+
+
+async def get_order(order_id: int) -> Optional[dict[str, Any]]:
+    row = await db.get_conn().execute_fetchone(
+        "SELECT * FROM orders WHERE id = ?", (order_id,)
+    )
+    return dict(row) if row else None
+
+
+async def claim_next_pending() -> Optional[dict[str, Any]]:
+    """Atomically claim oldest pending order for Luci worker."""
+    conn = db.get_conn()
+    row = await conn.execute_fetchone(
+        "SELECT * FROM orders WHERE status = 'pending' ORDER BY id ASC LIMIT 1"
+    )
+    if not row:
+        return None
+    order_id = row["id"]
+    now = int(time.time())
+    await conn.execute(
+        "UPDATE orders SET status = 'processing', luci_claimed_at = ? WHERE id = ? AND status = 'pending'",
+        (now, order_id),
+    )
+    await conn.commit()
+    updated = await get_order(order_id)
+    if updated and updated["status"] == "processing":
+        out = dict(updated)
+        out["item_id"] = item_id_for(updated["item_type"])
+        return out
+    return None
+
+
+async def complete_order(order_id: int) -> Optional[dict[str, Any]]:
+    conn = db.get_conn()
+    await conn.execute(
+        "UPDATE orders SET status = 'completed', completed_at = ? WHERE id = ?",
+        (int(time.time()), order_id),
+    )
+    await conn.commit()
+    return await get_order(order_id)
+
+
+async def fail_order(order_id: int, reason: str, *, refund: bool = True) -> Optional[dict[str, Any]]:
+    order = await get_order(order_id)
+    if not order or order["status"] in ("completed", "failed"):
+        return order
+    prev_status = order["status"]
+    conn = db.get_conn()
+    await conn.execute(
+        "UPDATE orders SET status = 'failed', fail_reason = ?, completed_at = ? WHERE id = ?",
+        (reason[:500], int(time.time()), order_id),
+    )
+    await conn.commit()
+    if refund and prev_status in ("pending", "processing"):
+        await db.add_balance(int(order["user_id"]), float(order["price_paid"]))
+    return await get_order(order_id)
+
+
+async def mark_notified(order_id: int) -> None:
+    await db.get_conn().execute(
+        "UPDATE orders SET notified = 1 WHERE id = ?", (order_id,)
+    )
+    await db.get_conn().commit()
+
+
+async def list_completed_unnotified() -> list[dict[str, Any]]:
+    rows = await db.get_conn().execute_fetchall(
+        "SELECT * FROM orders WHERE status = 'completed' AND notified = 0"
+    )
+    return [dict(r) for r in rows]
+
+
+async def list_failed_unnotified() -> list[dict[str, Any]]:
+    rows = await db.get_conn().execute_fetchall(
+        "SELECT * FROM orders WHERE status = 'failed' AND notified = 0"
+    )
+    return [dict(r) for r in rows]
+
+
+async def reset_stale_processing(max_age_sec: int = 600) -> int:
+    """Re-queue orders stuck in processing (bot crash)."""
+    cutoff = int(time.time()) - max_age_sec
+    conn = db.get_conn()
+    cur = await conn.execute(
+        """
+        UPDATE orders SET status = 'pending', luci_claimed_at = NULL
+        WHERE status = 'processing' AND luci_claimed_at IS NOT NULL AND luci_claimed_at < ?
+        """,
+        (cutoff,),
+    )
+    await conn.commit()
+    return cur.rowcount
