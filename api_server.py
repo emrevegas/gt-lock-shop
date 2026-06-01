@@ -1,5 +1,6 @@
 """HTTP API for Lucifer (Luci) withdraw script."""
 
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -9,7 +10,15 @@ import config
 from database import db
 from modules import orders
 
-app = FastAPI(title="GT Lock Shop Luci Bridge", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await db.init_db()
+    await orders.reset_stale_processing()
+    yield
+
+
+app = FastAPI(title="GT Lock Shop Luci Bridge", version="1.0.0", lifespan=lifespan)
 
 
 def verify_key(x_api_key: Optional[str] = Header(None)) -> None:
@@ -26,12 +35,6 @@ class CompleteBody(BaseModel):
 class FailBody(BaseModel):
     order_id: int
     reason: str = "unknown"
-
-
-@app.on_event("startup")
-async def startup():
-    await db.init_db()
-    await orders.reset_stale_processing()
 
 
 @app.get("/health")
@@ -67,3 +70,14 @@ async def fail_order(body: FailBody):
 async def luci_config():
     worlds = await orders.get_withdraw_worlds()
     return {"withdraw_worlds": worlds}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "api_server:app",
+        host=config.API_HOST,
+        port=config.API_PORT,
+        reload=False,
+    )
