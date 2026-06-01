@@ -1,9 +1,8 @@
 --[[
-  GT Lock Shop — Luci withdraw (DOSYA kuyruğu, API yok)
-  Kuyruk klasörü: data/luci/QUEUE_PATH.txt içinde yazar (bot.py ile aynı proje)
+  GT Lock Shop — Luci withdraw (dosya kuyruğu)
+  QUEUE_BASE = bot.py ile aynı data/luci klasörü
 ]]
 
--- Tam yol: bot'un oluşturduğu data/luci/QUEUE_PATH.txt dosyasını oku veya elle yaz
 local QUEUE_BASE = "C:/Users/Administrator/Desktop/lock/data/luci"
 local POLL_MS = 2500
 local ORDER_TIMEOUT_MS = 120000
@@ -13,10 +12,12 @@ local ITEM_WL = 242
 local ITEM_DL = 1796
 local ITEM_BGL = 7188
 
-local PENDING_DIR = QUEUE_BASE .. "/pending"
-local PROCESSING_DIR = QUEUE_BASE .. "/processing"
-local RESULTS_DIR = QUEUE_BASE .. "/results"
-local INDEX_FILE = QUEUE_BASE .. "/pending_index.txt"
+-- Yollar (init_paths sonradan günceller)
+local PENDING_DIR = ""
+local PROCESSING_DIR = ""
+local RESULTS_DIR = ""
+local INDEX_FILE = ""
+local ACTIVE_FILE = ""
 
 local bot = getBot()
 bot.auto_reconnect = true
@@ -32,39 +33,46 @@ local state = {
   order_started_ms = 0,
 }
 
-local function log(msg)
-  getBot():getLog():append("[GT-Shop] " .. tostring(msg))
-  print("[GT-Shop] " .. tostring(msg))
+-- Global fonksiyonlar: Lucifer runThread local upvalue taşımıyor
+function GT_log(msg)
+  local line = "[GT-Shop] " .. tostring(msg)
+  print(line)
+  pcall(function() getBot():getLog():append(line) end)
 end
 
-local function try_load_queue_base()
+function GT_init_paths()
+  local base = QUEUE_BASE
   local ok, path = pcall(function()
-    return read(QUEUE_BASE .. "/QUEUE_PATH.txt")
+    return read(base .. "/QUEUE_PATH.txt")
   end)
   if ok and path and path ~= "" then
     path = path:gsub("%s+", ""):gsub("\\", "/")
     if path:sub(-1) == "/" then path = path:sub(1, -2) end
-    return path
+    base = path
   end
-  return QUEUE_BASE
+  PENDING_DIR = base .. "/pending"
+  PROCESSING_DIR = base .. "/processing"
+  RESULTS_DIR = base .. "/results"
+  INDEX_FILE = base .. "/pending_index.txt"
+  ACTIVE_FILE = base .. "/processing/active.txt"
+  GT_log("Queue path: " .. base)
 end
 
-local function now_ms()
+function GT_norm_name(name)
+  if not name then return "" end
+  local s = tostring(name)
+  local ok, cleaned = pcall(function() return removeColor(s) end)
+  if ok and cleaned then s = cleaned end
+  s = string.lower(s)
+  s = s:gsub("`", ""):gsub("[^%w]", "")
+  return s
+end
+
+function GT_now_ms()
   return os.time() * 1000
 end
 
-local function norm_name(name)
-  if not name then return "" end
-  local s = removeColor(tostring(name))
-  return s:gsub("`", ""):gsub("[^%w]", ""):lower()
-end
-
-local function order_expired()
-  if state.order_started_ms <= 0 then return false end
-  return (now_ms() - state.order_started_ms) >= ORDER_TIMEOUT_MS
-end
-
-local function split_world(world_field)
+function GT_split_world(world_field)
   local w = string.upper(tostring(world_field or ""))
   local name, door = w, ""
   local pipe = w:find("|", 1, true)
@@ -75,15 +83,12 @@ local function split_world(world_field)
   return name, door
 end
 
-local function player_matches_buyer(player)
-  if not player or player.isLocalPlayer then return false end
-  local expected = state.expected_norm
-  if norm_name(player.name) == expected then return true end
-  if player.altName and norm_name(player.altName) == expected then return true end
-  return false
+function GT_order_expired()
+  if state.order_started_ms <= 0 then return false end
+  return (GT_now_ms() - state.order_started_ms) >= ORDER_TIMEOUT_MS
 end
 
-local function parse_order_json(body)
+function GT_parse_order_json(body)
   if not body or body == "" then return nil end
   body = body:gsub("%s+", "")
   local id = body:match('"id":(%d+)')
@@ -105,23 +110,23 @@ local function parse_order_json(body)
   return nil
 end
 
-local function item_id_for_type(t)
+function GT_item_id_for_type(t)
   if t == "dl" then return ITEM_DL end
   if t == "bgl" then return ITEM_BGL end
   return ITEM_WL
 end
 
-local function write_result(order_id, status, reason)
+function GT_write_result(order_id, status, reason)
   local safe = (reason or ""):gsub('"', "'")
   local json = string.format(
     '{"id":%d,"status":"%s","reason":"%s","at":%d}',
     order_id, status, safe, os.time()
   )
   write(RESULTS_DIR .. "/" .. order_id .. ".json", json)
-  log("Wrote result #" .. order_id .. " " .. status)
+  GT_log("Result #" .. order_id .. " " .. status)
 end
 
-local function read_index_ids()
+function GT_read_index_ids()
   local raw = read(INDEX_FILE)
   if not raw or raw == "" then return {} end
   local ids = {}
@@ -132,7 +137,7 @@ local function read_index_ids()
   return ids
 end
 
-local function write_index_ids(ids)
+function GT_write_index_ids(ids)
   if #ids == 0 then
     write(INDEX_FILE, "")
     return
@@ -142,47 +147,69 @@ local function write_index_ids(ids)
   write(INDEX_FILE, table.concat(lines, "\n") .. "\n")
 end
 
-local function claim_next_order()
-  local ids = read_index_ids()
-  if #ids == 0 then return nil end
-
-  local id = ids[1]
-  local pending_path = PENDING_DIR .. "/" .. id .. ".json"
-  local body = read(pending_path)
-  if not body or body == "" then
-    log("Missing pending file #" .. id .. ", skipping")
-    local rest = {}
-    for i = 2, #ids do rest[#rest + 1] = ids[i] end
-    write_index_ids(rest)
-    return nil
-  end
-
-  local order = parse_order_json(body)
-  if not order then
-    log("Parse error pending #" .. id)
-    return nil
-  end
-
-  write(PROCESSING_DIR .. "/" .. id .. ".json", body)
-  write(pending_path, "")
-
-  local rest = {}
-  for i = 2, #ids do rest[#rest + 1] = ids[i] end
-  write_index_ids(rest)
-
-  log("Claimed file order #" .. id)
-  return order
+function GT_load_order_file(dir, id)
+  local body = read(dir .. "/" .. id .. ".json")
+  if not body or body == "" then return nil end
+  return GT_parse_order_json(body)
 end
 
-local function inventory_count(item_id)
+function GT_claim_from_processing()
+  local id_str = read(ACTIVE_FILE)
+  if not id_str or id_str == "" then return nil end
+  local id = tonumber(id_str:match("(%d+)"))
+  if not id then return nil end
+  local order = GT_load_order_file(PROCESSING_DIR, id)
+  if order then
+    GT_log("Resume processing #" .. id .. " world=" .. order.world_name)
+    return order
+  end
+  return nil
+end
+
+function GT_claim_next_order()
+  local ids = GT_read_index_ids()
+  if #ids > 0 then
+    local id = ids[1]
+    local pending_path = PENDING_DIR .. "/" .. id .. ".json"
+    local body = read(pending_path)
+    if body and body ~= "" then
+      local order = GT_parse_order_json(body)
+      if order then
+        write(PROCESSING_DIR .. "/" .. id .. ".json", body)
+        write(ACTIVE_FILE, tostring(id))
+        write(pending_path, "")
+        local rest = {}
+        for i = 2, #ids do rest[#rest + 1] = ids[i] end
+        GT_write_index_ids(rest)
+        GT_log("Claimed pending #" .. id .. " world=" .. order.world_name)
+        return order
+      end
+    end
+    GT_log("Pending file missing for #" .. id)
+    local rest = {}
+    for i = 2, #ids do rest[#rest + 1] = ids[i] end
+    GT_write_index_ids(rest)
+  end
+  return GT_claim_from_processing()
+end
+
+function GT_player_matches(player)
+  if not player or player.isLocalPlayer then return false end
+  local expected = state.expected_norm
+  if GT_norm_name(player.name) == expected then return true end
+  if player.altName and GT_norm_name(player.altName) == expected then return true end
+  return false
+end
+
+function GT_inventory_count(item_id)
   local inv = bot:getInventory()
   if not inv then return 0 end
   return inv:findItem(item_id) or 0
 end
 
-local function ensure_connected()
+function GT_ensure_connected()
   if bot.status == BotStatus.online then return true end
-  log("Connecting... status=" .. tostring(bot.status))
+  GT_log("Connecting... status=" .. tostring(bot.status))
   bot:connect()
   for _ = 1, 45 do
     sleep(1000)
@@ -191,32 +218,44 @@ local function ensure_connected()
   return false
 end
 
-local function warp_to_world(world_field)
-  local world_name, door_id = split_world(world_field)
+function GT_warp_to_world(world_field)
+  local world_name, door_id = GT_split_world(world_field)
+  if world_name == "" then
+    GT_log("Empty world name in order")
+    return false
+  end
   for attempt = 1, 10 do
-    if order_expired() then return false end
-    log("Warp " .. attempt .. " → " .. world_name)
+    if GT_order_expired() then return false end
+    GT_log("Warp " .. attempt .. "/10 -> " .. world_name .. (door_id ~= "" and ("|" .. door_id) or ""))
     if door_id ~= "" then
       bot:warp(world_name, door_id)
     else
       bot:warp(world_name)
     end
     sleep(WARP_RETRY_MS)
-    if bot:isInWorld(world_name) then return true end
+    if bot:isInWorld(world_name) then
+      GT_log("In world " .. world_name)
+      return true
+    end
+    local cur = ""
+    if bot:isInWorld() and bot:getWorld() then
+      cur = tostring(bot:getWorld().name or "?")
+    end
+    GT_log("Not in " .. world_name .. " yet (now: " .. cur .. ")")
   end
   return false
 end
 
-local function find_expected_player()
+function GT_find_buyer()
   local world = bot:getWorld()
   if not world then return nil end
   for _, p in pairs(world:getPlayers()) do
-    if player_matches_buyer(p) then return p end
+    if GT_player_matches(p) then return p end
   end
   return nil
 end
 
-local function trade_add_item(item_id, count)
+function GT_trade_add_item(item_id, count)
   for i = 1, count do
     bot:sendPacket(2, string.format(
       "action|dialog_return\ndialog_name|trade_item\nitemID|%d\ncount|1\n", item_id))
@@ -224,15 +263,15 @@ local function trade_add_item(item_id, count)
   end
 end
 
-local function trade_lock()
+function GT_trade_lock()
   bot:sendPacket(2, "action|dialog_return\ndialog_name|trade_confirm\nbuttonClicked|lock\n")
 end
 
-local function trade_accept()
+function GT_trade_accept()
   bot:sendPacket(2, "action|dialog_return\ndialog_name|trade_confirm\nbuttonClicked|accept\n")
 end
 
-local function clear_state()
+function GT_clear_state()
   state.busy = false
   state.order = nil
   state.trade_phase = "idle"
@@ -241,68 +280,71 @@ local function clear_state()
   state.order_started_ms = 0
 end
 
-local function finish_order_fail(order, reason)
-  log(reason)
-  write_result(order.id, "failed", reason)
-  clear_state()
+function GT_finish_fail(order, reason)
+  GT_log(reason)
+  GT_write_result(order.id, "failed", reason)
+  write(ACTIVE_FILE, "")
+  GT_clear_state()
 end
 
-local function finish_order_success(order)
-  write_result(order.id, "completed", "")
-  log("Order #" .. order.id .. " completed")
-  clear_state()
+function GT_finish_success(order)
+  GT_write_result(order.id, "completed", "")
+  GT_log("Done #" .. order.id)
+  write(ACTIVE_FILE, "")
+  GT_clear_state()
 end
 
-local function run_order(order)
+function GT_run_order(order)
   state.busy = true
   state.order = order
-  state.expected_norm = norm_name(order.growid)
+  state.expected_norm = GT_norm_name(order.growid)
   state.trade_phase = "waiting_player"
   state.trade_done = false
-  state.order_started_ms = now_ms()
+  state.order_started_ms = GT_now_ms()
 
-  local item_id = order.item_id or item_id_for_type(order.item_type)
+  local item_id = order.item_id or GT_item_id_for_type(order.item_type)
   local qty = tonumber(order.quantity) or 1
-  local world_name = split_world(order.world_name)
+  local world_name = GT_split_world(order.world_name)
 
   if state.expected_norm == "" then
-    finish_order_fail(order, "invalid_growid")
+    GT_finish_fail(order, "invalid_growid")
     return
   end
-  if inventory_count(item_id) < qty then
-    finish_order_fail(order, "insufficient_bot_stock")
+  if GT_inventory_count(item_id) < qty then
+    GT_finish_fail(order, "insufficient_bot_stock")
     return
   end
-  if not ensure_connected() then
-    finish_order_fail(order, "bot_offline")
-    return
-  end
-
-  log(string.format("Start #%d → %s buyer=%s", order.id, order.world_name, order.growid))
-
-  if not warp_to_world(order.world_name) then
-    finish_order_fail(order, "warp_failed")
+  if not GT_ensure_connected() then
+    GT_finish_fail(order, "bot_offline")
     return
   end
 
-  while state.order and not order_expired() do
+  GT_log(string.format("Order #%d world=%s growid=%s qty=%d", order.id, order.world_name, order.growid, qty))
+
+  if not GT_warp_to_world(order.world_name) then
+    GT_finish_fail(order, "warp_failed")
+    return
+  end
+
+  while state.order and not GT_order_expired() do
     if not bot:isInWorld(world_name) then
-      warp_to_world(order.world_name)
+      GT_warp_to_world(order.world_name)
     else
       if state.trade_done then
-        finish_order_success(order)
+        GT_finish_success(order)
         return
       end
-      local buyer = find_expected_player()
+      local buyer = GT_find_buyer()
       if buyer and state.trade_phase == "waiting_player" then
         state.trade_phase = "trading"
+        GT_log("Trade -> " .. tostring(buyer.name))
         bot:wrenchPlayer(buyer.netid)
         sleep(1500)
-        trade_add_item(item_id, qty)
+        GT_trade_add_item(item_id, qty)
         sleep(800)
-        trade_lock()
+        GT_trade_lock()
         sleep(500)
-        trade_accept()
+        GT_trade_accept()
       end
       sleep(500)
     end
@@ -310,9 +352,9 @@ local function run_order(order)
 
   if state.order then
     if state.trade_done then
-      finish_order_success(order)
+      GT_finish_success(order)
     else
-      finish_order_fail(order, "order_timeout_2min")
+      GT_finish_fail(order, "order_timeout_2min")
     end
   end
 end
@@ -329,20 +371,14 @@ end
 
 addEvent(Event.variantlist, on_variantlist)
 
-QUEUE_BASE = try_load_queue_base()
-PENDING_DIR = QUEUE_BASE .. "/pending"
-PROCESSING_DIR = QUEUE_BASE .. "/processing"
-RESULTS_DIR = QUEUE_BASE .. "/results"
-INDEX_FILE = QUEUE_BASE .. "/pending_index.txt"
-
-log("File worker → " .. QUEUE_BASE)
+GT_init_paths()
 
 while true do
   if not state.busy then
-    local order = claim_next_order()
+    local order = GT_claim_next_order()
     if order then
-      state.busy = true
-      runThread(run_order, order)
+      -- runThread kullanma: Luci thread'de local upvalue kırılıyor
+      GT_run_order(order)
     end
   end
   listenEvents(2)
