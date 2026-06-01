@@ -52,11 +52,15 @@ async def log_api_requests(request: Request, call_next):
     return response
 
 
-def verify_key(x_api_key: Optional[str] = Header(None)) -> None:
+def verify_key(
+    x_api_key: Optional[str] = Header(None, alias="X-Api-Key"),
+    x_api_key_lower: Optional[str] = Header(None, alias="x-api-key"),
+) -> None:
     if not config.LUCI_API_KEY:
         raise HTTPException(503, "LUCI_API_KEY not configured")
-    if x_api_key != config.LUCI_API_KEY:
-        log.warning("API rejected: bad or missing X-Api-Key from %s", x_api_key)
+    key = x_api_key or x_api_key_lower
+    if key != config.LUCI_API_KEY:
+        log.warning("API rejected: bad or missing X-Api-Key")
         raise HTTPException(401, "Invalid API key")
 
 
@@ -106,8 +110,8 @@ async def order_stats():
 
 @app.get("/api/orders/pending", dependencies=[Depends(verify_key)])
 async def pending_orders():
-    luci_status.touch_poll()
     """Siparişleri claim etmeden listele (debug)."""
+    luci_status.touch_poll()
     return {
         "orders": await orders.list_active_orders(limit=50),
         "counts": await orders.count_orders_by_status(),

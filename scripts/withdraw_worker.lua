@@ -2,8 +2,9 @@
   GT Lock Shop — Lucifer (Luci) withdraw worker
 ]]
 
+-- .env LUCI_API_KEY ile BİREBİR aynı olmalı
 local API_URL = "http://127.0.0.1:8765"
-local API_KEY = "change-me-to-a-long-random-secret"
+local API_KEY = "POWERFULSECRET"
 local POLL_MS = 2500
 local ORDER_TIMEOUT_MS = 120000
 local WARP_RETRY_MS = 5000
@@ -72,32 +73,45 @@ local function player_matches_buyer(player)
   return false
 end
 
-local function http_get(path)
+local function http_request(method, path, json_body)
   local client = HttpClient.new()
-  client.method = Method.get
+  client.method = method
   client.url = API_URL .. path
-  client.headers = client.headers or {}
-  client.headers["X-Api-Key"] = API_KEY
+  client.headers = {
+    ["X-Api-Key"] = API_KEY,
+    ["User-Agent"] = "Lucifer-GTShop",
+    ["Accept"] = "application/json",
+  }
+  if json_body then
+    client.headers["Content-Type"] = "application/json"
+    client.content = json_body
+  end
+
   local res = client:request()
+  local net_err = res.error or 0
+  if res.getError then
+    local msg = res:getError()
+    if msg and msg ~= "" then
+      net_err = msg
+    end
+  end
+  if net_err ~= 0 and net_err ~= "0" then
+    log("HTTP network error: " .. tostring(net_err) .. " url=" .. client.url)
+    return nil, "network:" .. tostring(net_err)
+  end
   if res.status ~= 200 then
-    return nil, "HTTP " .. tostring(res.status) .. " " .. (res.body or "")
+    log("HTTP " .. tostring(res.status) .. " " .. path .. " body=" .. tostring(res.body):sub(1, 120))
+    return nil, "HTTP " .. tostring(res.status)
   end
   return res.body, nil
 end
 
+local function http_get(path)
+  return http_request(Method.get, path, nil)
+end
+
 local function http_post(path, json_body)
-  local client = HttpClient.new()
-  client.method = Method.post
-  client.url = API_URL .. path
-  client.headers = client.headers or {}
-  client.headers["X-Api-Key"] = API_KEY
-  client.headers["Content-Type"] = "application/json"
-  client.content = json_body
-  local res = client:request()
-  if res.status ~= 200 then
-    return nil, "HTTP " .. tostring(res.status)
-  end
-  return res.body, nil
+  return http_request(Method.post, path, json_body)
 end
 
 local function parse_order_json(body)
@@ -350,10 +364,20 @@ end
 
 addEvent(Event.variantlist, on_variantlist)
 
--- İlk açılışta takılı processing siparişleri serbest bırak
-http_post("/api/orders/requeue-stuck", "{}")
+log("Worker starting → " .. API_URL)
 
-log("Worker started → " .. API_URL)
+local health_body, health_err = http_get("/health")
+if health_err then
+  log("FATAL: /health failed: " .. health_err)
+  log("bot.py bu makinede çalışıyor mu? Sadece: py bot.py")
+else
+  log("API health OK: " .. tostring(health_body):sub(1, 80))
+end
+
+local _, re_err = http_post("/api/orders/requeue-stuck", "{}")
+if re_err then
+  log("requeue-stuck warn: " .. re_err)
+end
 
 while true do
   if not state.busy then
