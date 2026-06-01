@@ -31,6 +31,13 @@ local state = {
   trade_phase = "idle",
   trade_done = false,
   trade_cmd_sent = false,
+  trade_open = false,
+  trade_item_id = 0,
+  trade_qty = 0,
+  trade_items_placed = false,
+  trade_locked = false,
+  trade_add_attempts = 0,
+  last_trade_add_ms = 0,
   order_started_ms = 0,
 }
 
@@ -266,19 +273,113 @@ function GT_find_buyer()
 end
 
 function GT_trade_add_item(item_id, count)
-  for i = 1, count do
-    bot:sendPacket(2, string.format(
-      "action|dialog_return\ndialog_name|trade_item\nitemID|%d\ncount|1\n", item_id))
-    sleep(120)
+  count = tonumber(count) or 1
+  item_id = tonumber(item_id) or ITEM_WL
+  GT_log("Adding to trade: item=" .. item_id .. " x" .. count)
+
+  -- Yöntem 1: doğrudan trade_item (en yaygın)
+  bot:sendPacket(2, "action|trade_item\nitemID|" .. item_id .. "\ncount|" .. count)
+  sleep(350)
+
+  -- Yöntem 2: dialog_return
+  bot:sendPacket(2, "action|dialog_return\ndialog_name|trade_item\nitemID|" .. item_id .. "\ncount|" .. count)
+  sleep(350)
+
+  -- Yöntem 3: tradescreen dialog
+  bot:sendPacket(2, "action|dialog_return\ndialog_name|tradescreen\nitemID|" .. item_id .. "\ncount|" .. count)
+  sleep(350)
+
+  -- Yöntem 4: tek tek ekle (WL gibi stackable)
+  if count > 1 and count <= 40 then
+    for i = 1, count do
+      bot:sendPacket(2, "action|trade_item\nitemID|" .. item_id .. "\ncount|1")
+      sleep(180)
+    end
   end
 end
 
 function GT_trade_lock()
+  GT_log("Trade lock")
   bot:sendPacket(2, "action|dialog_return\ndialog_name|trade_confirm\nbuttonClicked|lock\n")
+  bot:sendPacket(2, "action|dialog_return\ndialog_name|tradescreen\nbuttonClicked|lock\n")
 end
 
 function GT_trade_accept()
+  GT_log("Trade accept")
   bot:sendPacket(2, "action|dialog_return\ndialog_name|trade_confirm\nbuttonClicked|accept\n")
+  bot:sendPacket(2, "action|dialog_return\ndialog_name|tradescreen\nbuttonClicked|accept\n")
+end
+
+function GT_on_trade_status(payload)
+  if not payload or payload == "" then return end
+  state.trade_open = true
+
+  local slot_item, slot_count = payload:match("add_slot|(%d+)|(%d+)")
+  if slot_item then
+    local sid = tonumber(slot_item)
+    local sc = tonumber(slot_count) or 0
+    if sid == state.trade_item_id and sc >= state.trade_qty then
+      state.trade_items_placed = true
+      GT_log("Trade slot OK: " .. sid .. " x" .. sc)
+    elseif sid == state.trade_item_id and sc > 0 then
+      GT_log("Trade slot partial: " .. sc .. "/" .. state.trade_qty)
+    end
+  end
+
+  if payload:find("locked|1") and state.trade_items_placed then
+    state.trade_locked = true
+  end
+end
+
+function GT_on_trade_console(msg)
+  if not msg or msg == "" then return end
+  local low = msg:lower()
+  if low:find("trade change", 1, true) and low:find("added", 1, true) then
+    state.trade_items_placed = true
+    GT_log("Trade items confirmed (console)")
+  end
+  if low:find("trade complete", 1, true) or low:find("trade successful", 1, true) then
+    state.trade_done = true
+  end
+end
+
+function GT_trade_try_add_items()
+  if state.trade_items_placed or state.trade_item_id <= 0 then return end
+  if state.trade_add_attempts >= 8 then return end
+  local now = GT_now_ms()
+  if state.trade_add_attempts > 0 and (now - state.last_trade_add_ms) < 2000 then return end
+  state.trade_add_attempts = state.trade_add_attempts + 1
+  state.last_trade_add_ms = now
+  GT_log("Trade add attempt " .. state.trade_add_attempts .. "/8")
+  GT_trade_add_item(state.trade_item_id, state.trade_qty)
+end
+
+function GT_trade_tick()
+  if not state.order or state.trade_done then return end
+  if state.trade_phase ~= "trading" then return end
+
+  if state.trade_open and not state.trade_items_placed then
+    GT_trade_try_add_items()
+    return
+  end
+
+  -- Trade penceresi event gelmezse 3 sn sonra yine dene
+  if state.trade_cmd_sent and not state.trade_items_placed and not state.trade_open then
+    local elapsed = GT_now_ms() - state.last_trade_add_ms
+    if state.trade_add_attempts == 0 or elapsed > 3000 then
+      state.trade_open = true
+      GT_log("Trade open timeout — forcing item add")
+      GT_trade_try_add_items()
+    end
+    return
+  end
+
+  if state.trade_items_placed and not state.trade_locked then
+    GT_trade_lock()
+    state.trade_locked = true
+    sleep(800)
+    GT_trade_accept()
+  end
 end
 
 function GT_clear_state()
@@ -287,6 +388,13 @@ function GT_clear_state()
   state.trade_phase = "idle"
   state.trade_done = false
   state.trade_cmd_sent = false
+  state.trade_open = false
+  state.trade_item_id = 0
+  state.trade_qty = 0
+  state.trade_items_placed = false
+  state.trade_locked = false
+  state.trade_add_attempts = 0
+  state.last_trade_add_ms = 0
   state.expected_norm = ""
   state.order_started_ms = 0
 end
@@ -312,11 +420,19 @@ function GT_run_order(order)
   state.trade_phase = "waiting_player"
   state.trade_done = false
   state.trade_cmd_sent = false
-  state.order_started_ms = GT_now_ms()
+  state.trade_open = false
 
   local item_id = order.item_id or GT_item_id_for_type(order.item_type)
   local qty = tonumber(order.quantity) or 1
   local world_name = GT_split_world(order.world_name)
+
+  state.trade_item_id = item_id
+  state.trade_qty = qty
+  state.trade_items_placed = false
+  state.trade_locked = false
+  state.trade_add_attempts = 0
+  state.last_trade_add_ms = 0
+  state.order_started_ms = GT_now_ms()
 
   if state.expected_norm == "" then
     GT_finish_fail(order, "invalid_growid")
@@ -347,22 +463,17 @@ function GT_run_order(order)
         return
       end
       local buyer = GT_find_buyer()
-      if buyer and state.trade_phase == "waiting_player" then
+      if buyer and not state.trade_cmd_sent then
         state.trade_phase = "trading"
+        state.trade_cmd_sent = true
         GT_log("Buyer in world: " .. tostring(buyer.name))
         GT_request_trade(order.growid)
-        sleep(2500)
-        GT_trade_add_item(item_id, qty)
-        sleep(800)
-        GT_trade_lock()
-        sleep(500)
-        GT_trade_accept()
-      elseif state.trade_phase == "waiting_player" and GT_norm_name(order.growid) ~= "" then
-        -- Alıcı henüz yoksa yine de /trade dene (buyer sonra girer)
-        if not state.trade_cmd_sent then
-          state.trade_cmd_sent = true
-          GT_request_trade(order.growid)
-        end
+      elseif state.trade_phase == "trading" then
+        GT_trade_tick()
+      elseif state.trade_phase == "waiting_player" and not state.trade_cmd_sent then
+        state.trade_cmd_sent = true
+        state.trade_phase = "trading"
+        GT_request_trade(order.growid)
       end
       sleep(500)
     end
@@ -382,10 +493,19 @@ function on_variantlist(variant, netid)
   local head = variant:get(0):getString()
   if head == "OnTradeStatus" then
     state.trade_phase = "trading"
+    local payload = ""
+    pcall(function() payload = variant:get(4):getString() or "" end)
+    GT_on_trade_status(payload)
   elseif head == "OnConsoleMessage" then
-    local msg = (variant:get(1):getString() or ""):lower()
-    if msg:find("trade complete", 1, true) or msg:find("trade successful", 1, true) then
-      state.trade_done = true
+    GT_on_trade_console(variant:get(1):getString() or "")
+  elseif head == "OnForceTradeEnd" then
+    if state.trade_phase == "trading" and not state.trade_done then
+      GT_log("Trade cancelled")
+      state.trade_open = false
+      state.trade_items_placed = false
+      state.trade_locked = false
+      state.trade_add_attempts = 0
+      state.last_trade_add_ms = 0
     end
   end
 end
