@@ -60,16 +60,14 @@ async def create_order(
 
 
 async def get_order(order_id: int) -> Optional[dict[str, Any]]:
-    row = await db.get_conn().execute_fetchone(
-        "SELECT * FROM orders WHERE id = ?", (order_id,)
-    )
+    row = await db.fetchone("SELECT * FROM orders WHERE id = ?", (order_id,))
     return dict(row) if row else None
 
 
 async def claim_next_pending() -> Optional[dict[str, Any]]:
     """Atomically claim oldest pending order for Luci worker."""
     conn = db.get_conn()
-    row = await conn.execute_fetchone(
+    row = await db.fetchone(
         "SELECT * FROM orders WHERE status = 'pending' ORDER BY id ASC LIMIT 1"
     )
     if not row:
@@ -123,14 +121,14 @@ async def mark_notified(order_id: int) -> None:
 
 
 async def list_completed_unnotified() -> list[dict[str, Any]]:
-    rows = await db.get_conn().execute_fetchall(
+    rows = await db.fetchall(
         "SELECT * FROM orders WHERE status = 'completed' AND notified = 0"
     )
     return [dict(r) for r in rows]
 
 
 async def list_failed_unnotified() -> list[dict[str, Any]]:
-    rows = await db.get_conn().execute_fetchall(
+    rows = await db.fetchall(
         "SELECT * FROM orders WHERE status = 'failed' AND notified = 0"
     )
     return [dict(r) for r in rows]

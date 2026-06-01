@@ -39,8 +39,7 @@ class GTLockBot(commands.Bot):
     async def deposit_monitor(self):
         import json
 
-        conn = db.get_conn()
-        rows = await conn.execute_fetchall("SELECT user_id, wallet_json FROM crypto_wallets")
+        rows = await db.fetchall("SELECT user_id, wallet_json FROM crypto_wallets")
         from modules.crypto_deposit import check_user_deposits
 
         for row in rows:

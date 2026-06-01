@@ -63,7 +63,7 @@ async def _next_wallet_index() -> int:
 
 async def get_or_create_wallet(user_id: int) -> dict:
     conn = db.get_conn()
-    row = await conn.execute_fetchone(
+    row = await db.fetchone(
         "SELECT wallet_json FROM crypto_wallets WHERE user_id = ?", (user_id,)
     )
     if row:

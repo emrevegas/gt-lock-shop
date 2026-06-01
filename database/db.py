@@ -80,11 +80,19 @@ def get_conn() -> aiosqlite.Connection:
     return _conn
 
 
+async def fetchone(sql: str, params: tuple = ()) -> Optional[aiosqlite.Row]:
+    cursor = await get_conn().execute(sql, params)
+    return await cursor.fetchone()
+
+
+async def fetchall(sql: str, params: tuple = ()) -> list[aiosqlite.Row]:
+    cursor = await get_conn().execute(sql, params)
+    return await cursor.fetchall()
+
+
 async def ensure_user(user_id: int) -> None:
     conn = get_conn()
-    row = await conn.execute_fetchone(
-        "SELECT user_id FROM users WHERE user_id = ?", (user_id,)
-    )
+    row = await fetchone("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
     if row:
         return
     await conn.execute(
@@ -96,9 +104,7 @@ async def ensure_user(user_id: int) -> None:
 
 async def get_balance(user_id: int) -> float:
     await ensure_user(user_id)
-    row = await get_conn().execute_fetchone(
-        "SELECT balance FROM users WHERE user_id = ?", (user_id,)
-    )
+    row = await fetchone("SELECT balance FROM users WHERE user_id = ?", (user_id,))
     return float(row["balance"]) if row else 0.0
 
 
@@ -137,16 +143,12 @@ async def set_growid(user_id: int, growid: str) -> None:
 
 async def get_growid(user_id: int) -> Optional[str]:
     await ensure_user(user_id)
-    row = await get_conn().execute_fetchone(
-        "SELECT growid FROM users WHERE user_id = ?", (user_id,)
-    )
+    row = await fetchone("SELECT growid FROM users WHERE user_id = ?", (user_id,))
     return row["growid"] if row and row["growid"] else None
 
 
 async def get_setting(key: str, default: Any = None) -> Any:
-    row = await get_conn().execute_fetchone(
-        "SELECT value FROM settings WHERE key = ?", (key,)
-    )
+    row = await fetchone("SELECT value FROM settings WHERE key = ?", (key,))
     if not row:
         return default
     try:
