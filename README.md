@@ -66,14 +66,6 @@ python bot.py
 | `/setworlds` | Admin withdraw dünyaları |
 | `/addbalance` | Admin manuel bakiye |
 
-## API (Luci)
-
-Header: `X-Api-Key: <LUCI_API_KEY>`
-
-- `GET /api/orders/next` — sıradaki siparişi `processing` yapar
-- `POST /api/orders/complete` — `{"order_id": 1}`
-- `POST /api/orders/fail` — `{"order_id": 1, "reason": "..."}`
-
 ## Akış (satın alma)
 
 1. Kullanıcı `/buy` → miktar → GrowID (veya kayıtlı GrowID).
