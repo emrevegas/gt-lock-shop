@@ -30,6 +30,7 @@ local state = {
   expected_norm = "",
   trade_phase = "idle",
   trade_done = false,
+  trade_cmd_sent = false,
   order_started_ms = 0,
 }
 
@@ -246,6 +247,15 @@ function GT_warp_to_world(world_field)
   return false
 end
 
+function GT_request_trade(growid)
+  local gid = tostring(growid or ""):gsub("%s+", "")
+  if gid == "" then return false end
+  local cmd = "/trade " .. gid
+  GT_log("Say: " .. cmd)
+  bot:say(cmd)
+  return true
+end
+
 function GT_find_buyer()
   local world = bot:getWorld()
   if not world then return nil end
@@ -276,6 +286,7 @@ function GT_clear_state()
   state.order = nil
   state.trade_phase = "idle"
   state.trade_done = false
+  state.trade_cmd_sent = false
   state.expected_norm = ""
   state.order_started_ms = 0
 end
@@ -300,6 +311,7 @@ function GT_run_order(order)
   state.expected_norm = GT_norm_name(order.growid)
   state.trade_phase = "waiting_player"
   state.trade_done = false
+  state.trade_cmd_sent = false
   state.order_started_ms = GT_now_ms()
 
   local item_id = order.item_id or GT_item_id_for_type(order.item_type)
@@ -337,14 +349,20 @@ function GT_run_order(order)
       local buyer = GT_find_buyer()
       if buyer and state.trade_phase == "waiting_player" then
         state.trade_phase = "trading"
-        GT_log("Trade -> " .. tostring(buyer.name))
-        bot:wrenchPlayer(buyer.netid)
-        sleep(1500)
+        GT_log("Buyer in world: " .. tostring(buyer.name))
+        GT_request_trade(order.growid)
+        sleep(2500)
         GT_trade_add_item(item_id, qty)
         sleep(800)
         GT_trade_lock()
         sleep(500)
         GT_trade_accept()
+      elseif state.trade_phase == "waiting_player" and GT_norm_name(order.growid) ~= "" then
+        -- Alıcı henüz yoksa yine de /trade dene (buyer sonra girer)
+        if not state.trade_cmd_sent then
+          state.trade_cmd_sent = true
+          GT_request_trade(order.growid)
+        end
       end
       sleep(500)
     end
@@ -361,7 +379,10 @@ end
 
 function on_variantlist(variant, netid)
   if not state.order then return end
-  if variant:get(0):getString() == "OnConsoleMessage" then
+  local head = variant:get(0):getString()
+  if head == "OnTradeStatus" then
+    state.trade_phase = "trading"
+  elseif head == "OnConsoleMessage" then
     local msg = (variant:get(1):getString() or ""):lower()
     if msg:find("trade complete", 1, true) or msg:find("trade successful", 1, true) then
       state.trade_done = true
