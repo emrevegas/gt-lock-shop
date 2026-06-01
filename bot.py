@@ -145,23 +145,22 @@ class GTLockBot(commands.Bot):
     async def before_order_notify(self):
         await self.wait_until_ready()
 
-    @tasks.loop(seconds=45.0)
+    @tasks.loop(seconds=20.0)
     async def order_queue_log(self):
         from modules.orders import count_orders_by_status, list_active_orders
 
         counts = await count_orders_by_status()
         pending = int(counts.get("pending", 0))
         processing = int(counts.get("processing", 0))
-        if pending or processing:
-            active = await list_active_orders(limit=5)
-            ids = ", ".join(f"#{o['id']}" for o in active)
-            log.info(
-                "[Order queue] pending=%s processing=%s next=[%s] all=%s",
-                pending,
-                processing,
-                ids,
-                counts,
-            )
+        active = await list_active_orders(limit=5) if (pending or processing) else []
+        ids = ", ".join(f"#{o['id']}:{o['status']}" for o in active) or "-"
+        log.info(
+            "[Order queue] pending=%s processing=%s active=[%s] all=%s",
+            pending,
+            processing,
+            ids,
+            counts,
+        )
 
     @order_queue_log.before_loop
     async def before_order_queue_log(self):
