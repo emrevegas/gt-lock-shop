@@ -71,6 +71,11 @@ async def create_order(
             world,
             created.get("status"),
         )
+        from modules.luci_files import enqueue_order
+
+        out = dict(created)
+        out["item_id"] = item_id_for(item_type)
+        enqueue_order(out)
     return created
 
 
@@ -165,7 +170,10 @@ async def reset_stale_processing(max_age_sec: int = 120) -> int:
 
 
 async def release_all_processing() -> int:
-    """Re-queue every processing order (API/bot restart)."""
+    """Re-queue every processing order (bot restart)."""
+    from modules.luci_files import enqueue_order
+
+    rows = await db.fetchall("SELECT * FROM orders WHERE status = 'processing'")
     conn = db.get_conn()
     cur = await conn.execute(
         """
@@ -174,6 +182,10 @@ async def release_all_processing() -> int:
         """
     )
     await conn.commit()
+    for row in rows:
+        o = dict(row)
+        o["item_id"] = item_id_for(o["item_type"])
+        enqueue_order(o)
     return cur.rowcount
 
 
@@ -220,6 +232,9 @@ async def cancel_order_by_id(
         ((reason or "admin_cancelled")[:500], int(time.time()), order_id),
     )
     await conn.commit()
+    from modules.luci_files import remove_order_files
+
+    remove_order_files(order_id)
     return await get_order(order_id)
 
 
@@ -264,6 +279,9 @@ async def cancel_all_active_orders(
         cancelled += 1
 
     await conn.commit()
+    from modules.luci_files import clear_all_queue_files
+
+    clear_all_queue_files()
     return {
         "cancelled": cancelled,
         "refunded_total": round(refunded_total, 2),

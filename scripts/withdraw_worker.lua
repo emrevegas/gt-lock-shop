@@ -1,10 +1,10 @@
 --[[
-  GT Lock Shop — Lucifer (Luci) withdraw worker
+  GT Lock Shop — Luci withdraw (DOSYA kuyruğu, API yok)
+  Kuyruk klasörü: data/luci/QUEUE_PATH.txt içinde yazar (bot.py ile aynı proje)
 ]]
 
--- .env LUCI_API_KEY ile BİREBİR aynı olmalı
-local API_URL = "http://127.0.0.1:8765"
-local API_KEY = "BURAYA_ENV_LUCI_API_KEY"
+-- Tam yol: bot'un oluşturduğu data/luci/QUEUE_PATH.txt dosyasını oku veya elle yaz
+local QUEUE_BASE = "C:/Users/Administrator/Desktop/lock/data/luci"
 local POLL_MS = 2500
 local ORDER_TIMEOUT_MS = 120000
 local WARP_RETRY_MS = 5000
@@ -12,6 +12,11 @@ local WARP_RETRY_MS = 5000
 local ITEM_WL = 242
 local ITEM_DL = 1796
 local ITEM_BGL = 7188
+
+local PENDING_DIR = QUEUE_BASE .. "/pending"
+local PROCESSING_DIR = QUEUE_BASE .. "/processing"
+local RESULTS_DIR = QUEUE_BASE .. "/results"
+local INDEX_FILE = QUEUE_BASE .. "/pending_index.txt"
 
 local bot = getBot()
 bot.auto_reconnect = true
@@ -32,6 +37,18 @@ local function log(msg)
   print("[GT-Shop] " .. tostring(msg))
 end
 
+local function try_load_queue_base()
+  local ok, path = pcall(function()
+    return read(QUEUE_BASE .. "/QUEUE_PATH.txt")
+  end)
+  if ok and path and path ~= "" then
+    path = path:gsub("%s+", ""):gsub("\\", "/")
+    if path:sub(-1) == "/" then path = path:sub(1, -2) end
+    return path
+  end
+  return QUEUE_BASE
+end
+
 local function now_ms()
   return os.time() * 1000
 end
@@ -39,8 +56,7 @@ end
 local function norm_name(name)
   if not name then return "" end
   local s = removeColor(tostring(name))
-  s = s:gsub("`", ""):gsub("[^%w]", ""):lower()
-  return s
+  return s:gsub("`", ""):gsub("[^%w]", ""):lower()
 end
 
 local function order_expired()
@@ -56,73 +72,20 @@ local function split_world(world_field)
     name = w:sub(1, pipe - 1)
     door = w:sub(pipe + 1)
   end
-  local colon = name:find(":", 1, true)
-  if colon and door == "" then
-    door = name:sub(colon + 1)
-    name = name:sub(1, colon - 1)
-  end
   return name, door
 end
 
 local function player_matches_buyer(player)
   if not player or player.isLocalPlayer then return false end
   local expected = state.expected_norm
-  if expected == "" then return false end
   if norm_name(player.name) == expected then return true end
   if player.altName and norm_name(player.altName) == expected then return true end
   return false
 end
 
-local function http_request(method, path, json_body)
-  local client = HttpClient.new()
-  client.method = method
-  client.url = API_URL .. path
-  client.headers = {
-    ["X-Api-Key"] = API_KEY,
-    ["User-Agent"] = "Lucifer-GTShop",
-    ["Accept"] = "application/json",
-  }
-  if json_body then
-    client.headers["Content-Type"] = "application/json"
-    client.content = json_body
-  end
-
-  local res = client:request()
-  local net_err = res.error or 0
-  if res.getError then
-    local msg = res:getError()
-    if msg and msg ~= "" then
-      net_err = msg
-    end
-  end
-  if net_err ~= 0 and net_err ~= "0" then
-    log("HTTP network error: " .. tostring(net_err) .. " url=" .. client.url)
-    return nil, "network:" .. tostring(net_err)
-  end
-  if res.status ~= 200 then
-    log("HTTP " .. tostring(res.status) .. " " .. path .. " body=" .. tostring(res.body):sub(1, 120))
-    return nil, "HTTP " .. tostring(res.status)
-  end
-  return res.body, nil
-end
-
-local function http_get(path)
-  return http_request(Method.get, path, nil)
-end
-
-local function http_post(path, json_body)
-  return http_request(Method.post, path, json_body)
-end
-
 local function parse_order_json(body)
   if not body or body == "" then return nil end
   body = body:gsub("%s+", "")
-  if body:find('"order":null', 1, true) then
-    return nil
-  end
-  if not body:find('"order":{', 1, true) then
-    return nil
-  end
   local id = body:match('"id":(%d+)')
   local growid = body:match('"growid":"([^"]+)"')
   local world = body:match('"world_name":"([^"]+)"')
@@ -139,7 +102,6 @@ local function parse_order_json(body)
       item_id = tonumber(item_id) or ITEM_WL,
     }
   end
-  log("Parse fail body=" .. tostring(body):sub(1, 200))
   return nil
 end
 
@@ -149,26 +111,67 @@ local function item_id_for_type(t)
   return ITEM_WL
 end
 
-local function fetch_next_order()
-  local body, err = http_get("/api/orders/next")
-  if err then
-    log("API error: " .. err)
+local function write_result(order_id, status, reason)
+  local safe = (reason or ""):gsub('"', "'")
+  local json = string.format(
+    '{"id":%d,"status":"%s","reason":"%s","at":%d}',
+    order_id, status, safe, os.time()
+  )
+  write(RESULTS_DIR .. "/" .. order_id .. ".json", json)
+  log("Wrote result #" .. order_id .. " " .. status)
+end
+
+local function read_index_ids()
+  local raw = read(INDEX_FILE)
+  if not raw or raw == "" then return {} end
+  local ids = {}
+  for line in raw:gmatch("[^\r\n]+") do
+    local n = tonumber(line:match("^(%d+)"))
+    if n then ids[#ids + 1] = n end
+  end
+  return ids
+end
+
+local function write_index_ids(ids)
+  if #ids == 0 then
+    write(INDEX_FILE, "")
+    return
+  end
+  local lines = {}
+  for i = 1, #ids do lines[i] = tostring(ids[i]) end
+  write(INDEX_FILE, table.concat(lines, "\n") .. "\n")
+end
+
+local function claim_next_order()
+  local ids = read_index_ids()
+  if #ids == 0 then return nil end
+
+  local id = ids[1]
+  local pending_path = PENDING_DIR .. "/" .. id .. ".json"
+  local body = read(pending_path)
+  if not body or body == "" then
+    log("Missing pending file #" .. id .. ", skipping")
+    local rest = {}
+    for i = 2, #ids do rest[#rest + 1] = ids[i] end
+    write_index_ids(rest)
     return nil
   end
+
   local order = parse_order_json(body)
-  if order then
-    log("API order #" .. order.id .. " world=" .. order.world_name)
+  if not order then
+    log("Parse error pending #" .. id)
+    return nil
   end
+
+  write(PROCESSING_DIR .. "/" .. id .. ".json", body)
+  write(pending_path, "")
+
+  local rest = {}
+  for i = 2, #ids do rest[#rest + 1] = ids[i] end
+  write_index_ids(rest)
+
+  log("Claimed file order #" .. id)
   return order
-end
-
-local function api_complete(order_id)
-  http_post("/api/orders/complete", string.format('{"order_id":%d}', order_id))
-end
-
-local function api_fail(order_id, reason)
-  local safe = (reason or "fail"):gsub('"', "'")
-  http_post("/api/orders/fail", string.format('{"order_id":%d,"reason":"%s"}', order_id, safe))
 end
 
 local function inventory_count(item_id)
@@ -178,50 +181,28 @@ local function inventory_count(item_id)
 end
 
 local function ensure_connected()
-  if bot.status == BotStatus.online then
-    return true
-  end
-  log("Bot not online (" .. tostring(bot.status) .. "), connecting...")
+  if bot.status == BotStatus.online then return true end
+  log("Connecting... status=" .. tostring(bot.status))
   bot:connect()
   for _ = 1, 45 do
     sleep(1000)
-    if bot.status == BotStatus.online then
-      log("Bot connected")
-      return true
-    end
+    if bot.status == BotStatus.online then return true end
   end
-  log("Connect timeout, status=" .. tostring(bot.status))
   return false
-end
-
-local function current_world_name()
-  if not bot:isInWorld() then return "" end
-  local w = bot:getWorld()
-  if w and w.name then
-    return string.upper(tostring(w.name))
-  end
-  return ""
 end
 
 local function warp_to_world(world_field)
   local world_name, door_id = split_world(world_field)
-  if world_name == "" then
-    return false
-  end
   for attempt = 1, 10 do
     if order_expired() then return false end
-    log("Warp " .. attempt .. "/10 → " .. world_name .. (door_id ~= "" and ("|" .. door_id) or ""))
+    log("Warp " .. attempt .. " → " .. world_name)
     if door_id ~= "" then
       bot:warp(world_name, door_id)
     else
       bot:warp(world_name)
     end
     sleep(WARP_RETRY_MS)
-    if bot:isInWorld(world_name) then
-      log("Entered world " .. world_name)
-      return true
-    end
-    log("Not in target yet (now: " .. current_world_name() .. ", status=" .. tostring(bot.status) .. ")")
+    if bot:isInWorld(world_name) then return true end
   end
   return false
 end
@@ -230,9 +211,7 @@ local function find_expected_player()
   local world = bot:getWorld()
   if not world then return nil end
   for _, p in pairs(world:getPlayers()) do
-    if player_matches_buyer(p) then
-      return p
-    end
+    if player_matches_buyer(p) then return p end
   end
   return nil
 end
@@ -240,9 +219,7 @@ end
 local function trade_add_item(item_id, count)
   for i = 1, count do
     bot:sendPacket(2, string.format(
-      "action|dialog_return\ndialog_name|trade_item\nitemID|%d\ncount|1\n",
-      item_id
-    ))
+      "action|dialog_return\ndialog_name|trade_item\nitemID|%d\ncount|1\n", item_id))
     sleep(120)
   end
 end
@@ -266,12 +243,12 @@ end
 
 local function finish_order_fail(order, reason)
   log(reason)
-  api_fail(order.id, reason)
+  write_result(order.id, "failed", reason)
   clear_state()
 end
 
 local function finish_order_success(order)
-  api_complete(order.id)
+  write_result(order.id, "completed", "")
   log("Order #" .. order.id .. " completed")
   clear_state()
 end
@@ -286,27 +263,22 @@ local function run_order(order)
 
   local item_id = order.item_id or item_id_for_type(order.item_type)
   local qty = tonumber(order.quantity) or 1
-  local world_name, _door = split_world(order.world_name)
+  local world_name = split_world(order.world_name)
 
   if state.expected_norm == "" then
     finish_order_fail(order, "invalid_growid")
     return
   end
-
   if inventory_count(item_id) < qty then
     finish_order_fail(order, "insufficient_bot_stock")
     return
   end
-
   if not ensure_connected() then
     finish_order_fail(order, "bot_offline")
     return
   end
 
-  log(string.format(
-    "Start order #%d → %s | buyer=%s",
-    order.id, order.world_name, order.growid
-  ))
+  log(string.format("Start #%d → %s buyer=%s", order.id, order.world_name, order.growid))
 
   if not warp_to_world(order.world_name) then
     finish_order_fail(order, "warp_failed")
@@ -315,19 +287,15 @@ local function run_order(order)
 
   while state.order and not order_expired() do
     if not bot:isInWorld(world_name) then
-      if not warp_to_world(order.world_name) then
-        sleep(1000)
-      end
+      warp_to_world(order.world_name)
     else
       if state.trade_done then
         finish_order_success(order)
         return
       end
-
       local buyer = find_expected_player()
       if buyer and state.trade_phase == "waiting_player" then
         state.trade_phase = "trading"
-        log("Buyer matched: " .. removeColor(buyer.name))
         bot:wrenchPlayer(buyer.netid)
         sleep(1500)
         trade_add_item(item_id, qty)
@@ -351,37 +319,27 @@ end
 
 function on_variantlist(variant, netid)
   if not state.order then return end
-  local head = variant:get(0):getString()
-  if head == "OnConsoleMessage" then
-    local msg = variant:get(1):getString() or ""
-    local low = msg:lower()
-    if low:find("trade complete", 1, true) or low:find("trade successful", 1, true) then
+  if variant:get(0):getString() == "OnConsoleMessage" then
+    local msg = (variant:get(1):getString() or ""):lower()
+    if msg:find("trade complete", 1, true) or msg:find("trade successful", 1, true) then
       state.trade_done = true
-      log("Trade complete detected")
     end
   end
 end
 
 addEvent(Event.variantlist, on_variantlist)
 
-log("Worker starting → " .. API_URL)
+QUEUE_BASE = try_load_queue_base()
+PENDING_DIR = QUEUE_BASE .. "/pending"
+PROCESSING_DIR = QUEUE_BASE .. "/processing"
+RESULTS_DIR = QUEUE_BASE .. "/results"
+INDEX_FILE = QUEUE_BASE .. "/pending_index.txt"
 
-local health_body, health_err = http_get("/health")
-if health_err then
-  log("FATAL: /health failed: " .. health_err)
-  log("bot.py bu makinede çalışıyor mu? Sadece: py bot.py")
-else
-  log("API health OK: " .. tostring(health_body):sub(1, 80))
-end
-
-local _, re_err = http_post("/api/orders/requeue-stuck", "{}")
-if re_err then
-  log("requeue-stuck warn: " .. re_err)
-end
+log("File worker → " .. QUEUE_BASE)
 
 while true do
   if not state.busy then
-    local order = fetch_next_order()
+    local order = claim_next_order()
     if order then
       state.busy = true
       runThread(run_order, order)

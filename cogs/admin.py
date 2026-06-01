@@ -30,66 +30,21 @@ class Admin(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="testluciapi", description="[Admin] Luci API bağlantı testi")
-    @app_commands.describe(claim="True ise sıradaki siparişi processing yapar")
-    @app_commands.guilds(*(_ADMIN_GUILDS or []))
-    async def testluciapi(
-        self, interaction: discord.Interaction, claim: bool = False
-    ):
-        if not is_admin(interaction):
-            return await interaction.response.send_message("Yetkisiz.", ephemeral=True)
-        if not config.LUCI_API_KEY:
-            return await interaction.response.send_message(
-                "LUCI_API_KEY .env içinde boş.", ephemeral=True
-            )
-        await interaction.response.defer(ephemeral=True)
-        import aiohttp
-
-        base = f"http://127.0.0.1:{config.API_PORT}"
-        headers = {"X-Api-Key": config.LUCI_API_KEY}
-        path = "/api/orders/next" if claim else "/api/orders/pending"
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{base}/health", timeout=aiohttp.ClientTimeout(total=5)) as hr:
-                    health = await hr.json()
-                async with session.get(
-                    f"{base}{path}", headers=headers, timeout=aiohttp.ClientTimeout(total=5)
-                ) as r:
-                    body = await r.json()
-                    status = r.status
-        except Exception as e:
-            return await interaction.followup.send(
-                f"❌ API'ye ulaşılamadı: `{e}`\n`bot.py` çalışıyor mu? Port {config.API_PORT}?",
-                ephemeral=True,
-            )
-        from modules import luci_status
-
-        since = luci_status.seconds_since_poll()
-        poll_note = (
-            f"Son Luci poll: {int(since)}s önce"
-            if since is not None
-            else "Luci henüz poll atmadı (script kapalı?)"
-        )
-        await interaction.followup.send(
-            f"✅ API OK (`{status}`)\n"
-            f"**Health:** `{health}`\n"
-            f"**{path}:** ```json\n{body}\n```\n"
-            f"{poll_note}\n\n"
-            f"Luci log'da `API GET /api/orders/next` görmüyorsan script çalışmıyor.",
-            ephemeral=True,
-        )
-
-    @app_commands.command(name="orderdebug", description="[Admin] DB + API + sipariş durumu")
+    @app_commands.command(name="orderdebug", description="[Admin] DB + dosya kuyruğu durumu")
     @app_commands.guilds(*(_ADMIN_GUILDS or []))
     async def orderdebug(self, interaction: discord.Interaction):
         if not is_admin(interaction):
             return await interaction.response.send_message("Yetkisiz.", ephemeral=True)
+        from modules.luci_files import LUCI_QUEUE_DIR, ensure_queue_dirs, queue_stats
+
+        ensure_queue_dirs()
         counts = await orders.count_orders_by_status()
+        qs = queue_stats()
         active = await orders.list_active_orders(limit=10)
         lines = [
             f"**DB:** `{config.DB_PATH.resolve()}`",
-            f"**API:** `http://{config.API_HOST}:{config.API_PORT}`",
-            f"**LUCI_API_KEY:** {'ayarlı' if config.LUCI_API_KEY else '❌ BOŞ'}",
+            f"**Luci kuyruk:** `{LUCI_QUEUE_DIR.resolve()}`",
+            f"**Dosyalar:** `{qs}`",
             f"**Durumlar:** `{counts}`",
         ]
         if active:
@@ -101,8 +56,8 @@ class Admin(commands.Cog):
         else:
             lines.append("_Aktif (pending/processing) sipariş yok._")
         lines.append(
-            "\nLuci `withdraw_worker.lua` çalışıyor olmalı.\n"
-            "Konsolda `API GET /api/orders/next` satırları görünmeli."
+            "\nLuci'de `withdraw_worker.lua` çalıştır.\n"
+            "`QUEUE_BASE` = kuyruk klasörü (QUEUE_PATH.txt ile aynı)."
         )
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 

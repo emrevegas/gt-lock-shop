@@ -1,4 +1,4 @@
-"""GT Lock Shop — Discord bot + background deposit monitor."""
+"""GT Lock Shop — Discord bot + Luci dosya kuyruğu."""
 
 import asyncio
 import logging
@@ -7,7 +7,6 @@ import discord
 from discord.ext import commands, tasks
 
 import config
-from api_server import app as fastapi_app
 from database import db
 
 logging.basicConfig(
@@ -15,12 +14,8 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 log = logging.getLogger("gt-lock-shop")
-# Uvicorn loglarını da aynı konsola yaz
-for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-    logging.getLogger(_name).setLevel(logging.INFO)
 
 intents = discord.Intents.default()
-# Slash-only bot; message_content kapalı (uyarı normal, komutları etkilemez)
 intents.members = True
 
 
@@ -30,13 +25,15 @@ class GTLockBot(commands.Bot):
 
     async def on_ready(self):
         from modules.orders import count_orders_by_status
+        from modules.luci_files import queue_stats
 
         counts = await count_orders_by_status()
+        qs = queue_stats()
         log.info(
-            "Discord ready: %s (%s) | order counts=%s",
+            "Discord ready: %s | db_orders=%s | file_queue=%s",
             self.user,
-            self.user.id if self.user else "?",
             counts,
+            qs,
         )
 
     async def _sync_app_commands(self) -> list[str]:
@@ -50,11 +47,7 @@ class GTLockBot(commands.Bot):
         else:
             synced = await self.tree.sync()
             names = [c.name for c in synced]
-            log.info(
-                "Global sync: %d commands (GUILD_ID yok — görünmesi saatler sürebilir): %s",
-                len(synced),
-                names,
-            )
+            log.info("Global sync: %d commands: %s", len(synced), names)
         return names
 
     async def setup_hook(self):
@@ -70,8 +63,8 @@ class GTLockBot(commands.Bot):
             self.order_notify.start()
         if not self.order_queue_log.is_running():
             self.order_queue_log.start()
-        if not self.luci_watchdog.is_running():
-            self.luci_watchdog.start()
+        if not self.luci_file_poll.is_running():
+            self.luci_file_poll.start()
 
     @tasks.loop(minutes=2.0)
     async def deposit_monitor(self):
@@ -132,7 +125,7 @@ class GTLockBot(commands.Bot):
                     if reason == "order_timeout_2min":
                         reason = "2 dakika içinde trade tamamlanmadı"
                     elif reason == "warp_failed":
-                        reason = "Bot hedef dünyaya giremedi (dünya adı/kapı ID kontrol et)"
+                        reason = "Bot hedef dünyaya giremedi"
                     elif reason == "bot_offline":
                         reason = "Growtopia botu çevrimiçi değil"
                     await user.send(
@@ -147,72 +140,43 @@ class GTLockBot(commands.Bot):
     async def before_order_notify(self):
         await self.wait_until_ready()
 
+    @tasks.loop(seconds=3.0)
+    async def luci_file_poll(self):
+        from modules.luci_files import process_file_results, sync_processing_from_files
+
+        claimed = await sync_processing_from_files()
+        handled = await process_file_results()
+        if claimed:
+            log.info("[Luci file] %s order(s) → processing", claimed)
+        if handled:
+            log.info("[Luci file] applied %s result(s) from disk", handled)
+
+    @luci_file_poll.before_loop
+    async def before_luci_file_poll(self):
+        await self.wait_until_ready()
+
     @tasks.loop(seconds=20.0)
     async def order_queue_log(self):
         from modules.orders import count_orders_by_status, list_active_orders
+        from modules.luci_files import queue_stats
 
         counts = await count_orders_by_status()
+        qs = queue_stats()
         pending = int(counts.get("pending", 0))
         processing = int(counts.get("processing", 0))
         active = await list_active_orders(limit=5) if (pending or processing) else []
         ids = ", ".join(f"#{o['id']}:{o['status']}" for o in active) or "-"
         log.info(
-            "[Order queue] pending=%s processing=%s active=[%s] all=%s",
+            "[Order queue] db pending=%s processing=%s | files %s | active=[%s]",
             pending,
             processing,
+            qs,
             ids,
-            counts,
         )
 
     @order_queue_log.before_loop
     async def before_order_queue_log(self):
         await self.wait_until_ready()
-
-    @tasks.loop(seconds=30.0)
-    async def luci_watchdog(self):
-        import time
-
-        from modules import luci_status
-        from modules.orders import count_orders_by_status
-
-        counts = await count_orders_by_status()
-        pending = int(counts.get("pending", 0))
-        processing = int(counts.get("processing", 0))
-        if pending == 0 and processing == 0:
-            return
-
-        since = luci_status.seconds_since_poll()
-        if since is None:
-            log.warning(
-                "[Luci] Sipariş bekliyor (pending=%s processing=%s) ama Luci API'ye HİÇ gelmedi. "
-                "Lucifer'de scripts/withdraw_worker.lua çalıştır; API_URL ve API_KEY kontrol et.",
-                pending,
-                processing,
-            )
-        elif since > 45:
-            log.warning(
-                "[Luci] %ds'dir API isteği yok (pending=%s processing=%s). Script durmuş olabilir.",
-                int(since),
-                pending,
-                processing,
-            )
-
-    @luci_watchdog.before_loop
-    async def before_luci_watchdog(self):
-        await self.wait_until_ready()
-
-
-async def run_api():
-    import uvicorn
-
-    config_uv = uvicorn.Config(
-        fastapi_app,
-        host=config.API_HOST,
-        port=config.API_PORT,
-        log_level="info",
-    )
-    server = uvicorn.Server(config_uv)
-    await server.serve()
 
 
 async def main():
@@ -220,21 +184,45 @@ async def main():
         raise SystemExit("DISCORD_TOKEN missing in .env")
 
     await db.init_db()
-    log.info(
-        "Starting GT Lock Shop | DB=%s | API=http://%s:%s",
-        config.DB_PATH.resolve(),
-        config.API_HOST,
-        config.API_PORT,
-    )
-    if not config.LUCI_API_KEY:
-        log.warning("LUCI_API_KEY boş — Luci script API'ye bağlanamaz!")
 
-    bot = GTLockBot()
-    api_task = asyncio.create_task(run_api())
-    try:
+    from modules.luci_files import ensure_queue_dirs, sync_pending_orders_from_db
+    from modules.orders import release_all_processing
+
+    qpath = ensure_queue_dirs()
+    released = await release_all_processing()
+    if released:
+        log.info("Re-queued %s processing order(s) to file queue", released)
+    synced = await sync_pending_orders_from_db()
+    if synced:
+        log.info("Synced %s pending order(s) to file queue", synced)
+
+    log.info("GT Lock Shop | DB=%s | Luci queue=%s", config.DB_PATH.resolve(), qpath)
+
+    if config.ENABLE_HTTP_API:
+        from api_server import app as fastapi_app
+        import uvicorn
+
+        log.info("HTTP API enabled on %s:%s", config.API_HOST, config.API_PORT)
+
+        async def run_api():
+            config_uv = uvicorn.Config(
+                fastapi_app,
+                host=config.API_HOST,
+                port=config.API_PORT,
+                log_level="info",
+            )
+            await uvicorn.Server(config_uv).serve()
+
+        bot = GTLockBot()
+        api_task = asyncio.create_task(run_api())
+        try:
+            await bot.start(config.DISCORD_TOKEN)
+        finally:
+            api_task.cancel()
+    else:
+        log.info("HTTP API kapalı — Luci dosya kuyruğu kullanılıyor")
+        bot = GTLockBot()
         await bot.start(config.DISCORD_TOKEN)
-    finally:
-        api_task.cancel()
 
 
 if __name__ == "__main__":

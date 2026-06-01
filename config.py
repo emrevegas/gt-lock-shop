@@ -40,6 +40,16 @@ DATA_DIR = ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "shop.db"
 
+# Luci dosya kuyruğu (withdraw_worker_file.lua burayı okur)
+LUCI_QUEUE_DIR = DATA_DIR / "luci"
+
+# Eski HTTP API (varsayılan kapalı)
+ENABLE_HTTP_API = os.getenv("ENABLE_HTTP_API", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
 # Growtopia item IDs
 ITEM_WL = 242
 ITEM_DL = 1796

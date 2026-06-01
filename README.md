@@ -12,18 +12,25 @@ Discord bot + Lucifer (Luci) script ile **WL / DL / BGL** satışı. Kullanıcı
 
 Ürünler: **World Lock** (242), **Diamond Lock** (1796), **Blue Gem Lock** (7188).
 
-## Mimari
+## Mimari (dosya kuyruğu)
 
 ```
-[Kullanıcı Discord] → /deposit (SOL/LTC) → bakiye
-                    → /buy → sipariş kuyruğu (SQLite)
-[Luci withdraw_worker.lua] → HTTP API → dünya + trade
-[Discord DM] ← işlem onaylandı / başarısız
+[Kullanıcı Discord] → /buy → SQLite + data/luci/pending/{id}.json
+[Luci withdraw_worker.lua] → read/write dosyalar → trade
+                         → data/luci/results/{id}.json
+[bot.py] → results okur → DB + Discord DM
 ```
 
-- **bot.py** — Discord + 2 dk crypto tarama + sipariş bildirimi
-- **api_server.py** (aynı process) — Luci için `GET /api/orders/next`, `complete`, `fail`
-- **scripts/withdraw_worker.lua** — Luci tarafı withdraw/trade
+Klasörler (`data/luci/`):
+
+| Klasör | Kim yazar | İçerik |
+|--------|-----------|--------|
+| `pending/` | Discord bot | Yeni sipariş JSON |
+| `processing/` | Luci | İşlenen sipariş |
+| `results/` | Luci | `completed` veya `failed` |
+
+- **bot.py** — Discord + dosya kuyruğu izleme (3 sn)
+- **scripts/withdraw_worker.lua** — Luci trade (HTTP yok)
 
 ## Kurulum
 
@@ -39,9 +46,11 @@ python bot.py
 
 ### Luci
 
-1. `scripts/withdraw_worker.lua` içinde `API_URL` ve `API_KEY` (.env ile aynı `LUCI_API_KEY`) ayarla.
-2. Bot envanterinde yeterli WL/DL/BGL bulundur.
-3. Withdraw dünyaları botun erişebildiği ve mümkünse sadece alıcı girişine açık dünyalar olsun (`/setworlds`).
+1. `python bot.py` çalışsın → `data/luci/QUEUE_PATH.txt` oluşur.
+2. `scripts/withdraw_worker.lua` içinde `QUEUE_BASE` = bu klasörün tam yolu  
+   Örn: `C:/Users/Administrator/Desktop/lock/data/luci`
+3. Scripti Lucifer'de çalıştır; Log'da `Claimed file order #...` görünür.
+4. `/setworlds` ile withdraw dünyalarını ayarla.
 
 ## Discord komutları
 
@@ -72,7 +81,7 @@ Header: `X-Api-Key: <LUCI_API_KEY>`
 3. Luci dünyaya girer; GrowID eşleşmeyen oyuncular için ban/kick dener (`auto_ban`).
 4. Eşleşen oyuncuya trade → miktarı koyar → lock/accept (`auto_accept` bot tarafında).
 5. Kullanıcı trade + onay ekranını kabul eder.
-6. Script `complete` çağırır → Discord **DM: işlem onaylandı**.
+6. Luci `results/{id}.json` yazar → bot işler → Discord **DM**.
 
 ## Notlar
 
