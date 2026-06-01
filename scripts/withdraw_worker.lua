@@ -13,6 +13,15 @@ local ITEM_WL = 242
 local ITEM_DL = 1796
 local ITEM_BGL = 7188
 
+-- Bilinen donation box foreground ID'leri (sunucuya göre ekle)
+local DONATION_BOX_IDS = {
+  [1452] = true,
+  [2810] = true,
+  [9878] = true,
+  [9984] = true,
+  [11586] = true, -- Donut Donation Box (bazı sürümler)
+}
+
 local PENDING_DIR = ""
 local PROCESSING_DIR = ""
 local RESULTS_DIR = ""
@@ -235,23 +244,66 @@ end
 
 function GT_is_donation_box(fg)
   if not fg or fg == 0 then return false end
+  if DONATION_BOX_IDS[fg] then return true end
   local ok, info = pcall(function() return getInfo(fg) end)
   if not ok or not info then return false end
   local name = tostring(info.name or ""):lower()
   if name:find("seed", 1, true) then return false end
-  return name:find("donation box", 1, true) ~= nil
+  return name:find("donation", 1, true) ~= nil and name:find("box", 1, true) ~= nil
 end
 
-function GT_find_accessible_donation_boxes()
+function GT_path_exists(x, y)
+  local ok, path = pcall(function() return bot:getPath(x, y) end)
+  if ok and path and #path > 0 then return true end
+  return false
+end
+
+-- hasAccess kutunun kendisinde false olabilir; komşu tile veya path yeterli
+function GT_can_reach_box(box_x, box_y)
+  local offsets = {
+    { 0, 1 }, { 0, -1 }, { 1, 0 }, { -1, 0 },
+    { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 },
+  }
+  for _, off in ipairs(offsets) do
+    local tx, ty = box_x + off[1], box_y + off[2]
+    if GT_path_exists(tx, ty) then return true end
+    if GT_tile_has_access(tx, ty) then return true end
+  end
+  -- Yol bulunamazsa yine dene (findPath runtime'da çalışabilir)
+  return true
+end
+
+function GT_find_donation_boxes()
   local world = bot:getWorld()
   if not world then return {} end
   local boxes = {}
   for _, tile in pairs(world:getTiles()) do
-    if GT_is_donation_box(tile.fg) and GT_tile_has_access(tile.x, tile.y) then
+    if GT_is_donation_box(tile.fg) then
+      GT_log("Donation box fg=" .. tile.fg .. " @ " .. tile.x .. "," .. tile.y)
       boxes[#boxes + 1] = { x = tile.x, y = tile.y, fg = tile.fg }
     end
   end
   return boxes
+end
+
+function GT_find_accessible_donation_boxes()
+  local all = GT_find_donation_boxes()
+  if #all == 0 then
+    GT_log("No donation box tiles in world scan")
+    return {}
+  end
+  GT_log("Donation boxes in world: " .. #all)
+  local reachable = {}
+  for _, box in ipairs(all) do
+    if GT_can_reach_box(box.x, box.y) then
+      reachable[#reachable + 1] = box
+    end
+  end
+  if #reachable == 0 then
+    GT_log("Reach check failed — trying first box anyway")
+    return { all[1] }
+  end
+  return reachable
 end
 
 function GT_move_near_tile(x, y)
@@ -407,8 +459,13 @@ function GT_run_order(order)
     return
   end
 
-  sleep(1500)
+  sleep(2000)
   local boxes = GT_find_accessible_donation_boxes()
+  if #boxes == 0 then
+    GT_log("Rescan donation boxes in 3s (world load)...")
+    sleep(3000)
+    boxes = GT_find_accessible_donation_boxes()
+  end
   if #boxes == 0 then
     GT_finish_fail(order, "no_donation_box")
     return
