@@ -14,13 +14,31 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("gt-lock-shop")
 
 intents = discord.Intents.default()
-intents.message_content = False
+# Slash-only bot; message_content kapalı (uyarı normal, komutları etkilemez)
 intents.members = True
 
 
 class GTLockBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
+
+    async def _sync_app_commands(self) -> list[str]:
+        names: list[str] = []
+        if config.GUILD_ID:
+            guild = discord.Object(id=config.GUILD_ID)
+            self.tree.copy_global_to(guild=guild)
+            synced = await self.tree.sync(guild=guild)
+            names = [c.name for c in synced]
+            log.info("Guild sync %s: %d commands: %s", config.GUILD_ID, len(synced), names)
+        else:
+            synced = await self.tree.sync()
+            names = [c.name for c in synced]
+            log.info(
+                "Global sync: %d commands (GUILD_ID yok — görünmesi saatler sürebilir): %s",
+                len(synced),
+                names,
+            )
+        return names
 
     async def setup_hook(self):
         await db.init_db()
@@ -29,11 +47,13 @@ class GTLockBot(commands.Bot):
                 await self.load_extension(ext)
             except Exception as e:
                 log.exception("Failed to load %s: %s", ext, e)
-        await self.tree.sync()
+        await self._sync_app_commands()
         if not self.deposit_monitor.is_running():
             self.deposit_monitor.start()
         if not self.order_notify.is_running():
             self.order_notify.start()
+        if not self.order_queue_log.is_running():
+            self.order_queue_log.start()
 
     @tasks.loop(minutes=2.0)
     async def deposit_monitor(self):
@@ -107,6 +127,28 @@ class GTLockBot(commands.Bot):
 
     @order_notify.before_loop
     async def before_order_notify(self):
+        await self.wait_until_ready()
+
+    @tasks.loop(seconds=45.0)
+    async def order_queue_log(self):
+        from modules.orders import count_orders_by_status, list_active_orders
+
+        counts = await count_orders_by_status()
+        pending = int(counts.get("pending", 0))
+        processing = int(counts.get("processing", 0))
+        if pending or processing:
+            active = await list_active_orders(limit=5)
+            ids = ", ".join(f"#{o['id']}" for o in active)
+            log.info(
+                "[Order queue] pending=%s processing=%s next=[%s] all=%s",
+                pending,
+                processing,
+                ids,
+                counts,
+            )
+
+    @order_queue_log.before_loop
+    async def before_order_queue_log(self):
         await self.wait_until_ready()
 
 

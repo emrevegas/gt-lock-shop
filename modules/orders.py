@@ -169,6 +169,45 @@ async def count_orders_by_status() -> dict[str, int]:
     return {str(r["status"]): int(r["c"]) for r in rows}
 
 
+async def list_active_orders(limit: int = 25) -> list[dict[str, Any]]:
+    rows = await db.fetchall(
+        """
+        SELECT * FROM orders
+        WHERE status IN ('pending', 'processing')
+        ORDER BY id ASC
+        LIMIT ?
+        """,
+        (max(1, min(int(limit), 100)),),
+    )
+    return [dict(r) for r in rows]
+
+
+async def cancel_order_by_id(
+    order_id: int,
+    *,
+    reason: str = "admin_cancelled",
+    refund: bool = True,
+) -> Optional[dict[str, Any]]:
+    order = await get_order(order_id)
+    if not order or order["status"] not in ("pending", "processing"):
+        return None
+    if refund:
+        amount = float(order["price_paid"])
+        if amount > 0:
+            await db.add_balance(int(order["user_id"]), amount)
+    conn = db.get_conn()
+    await conn.execute(
+        """
+        UPDATE orders
+        SET status = 'cancelled', fail_reason = ?, completed_at = ?, notified = 1
+        WHERE id = ? AND status IN ('pending', 'processing')
+        """,
+        ((reason or "admin_cancelled")[:500], int(time.time()), order_id),
+    )
+    await conn.commit()
+    return await get_order(order_id)
+
+
 async def cancel_all_active_orders(
     *,
     reason: str = "admin_cancelled",

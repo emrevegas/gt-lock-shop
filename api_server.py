@@ -47,11 +47,14 @@ async def health():
 
 @app.get("/api/orders/next", dependencies=[Depends(verify_key)])
 async def next_order():
+    counts = await orders.count_orders_by_status()
     order = await orders.claim_next_pending()
     if not order:
-        return {"order": None}
+        if counts.get("pending") or counts.get("processing"):
+            print(f"[API] No claimable order (counts={counts})")
+        return {"order": None, "counts": counts}
     print(f"[API] Claimed order #{order['id']} → world {order['world_name']} growid={order['growid']}")
-    return {"order": order}
+    return {"order": order, "counts": counts}
 
 
 @app.get("/api/orders/stats", dependencies=[Depends(verify_key)])
