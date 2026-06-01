@@ -30,6 +30,33 @@ class Admin(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    @app_commands.command(name="orderdebug", description="[Admin] DB + API + sipariş durumu")
+    @app_commands.guilds(*(_ADMIN_GUILDS or []))
+    async def orderdebug(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            return await interaction.response.send_message("Yetkisiz.", ephemeral=True)
+        counts = await orders.count_orders_by_status()
+        active = await orders.list_active_orders(limit=10)
+        lines = [
+            f"**DB:** `{config.DB_PATH.resolve()}`",
+            f"**API:** `http://{config.API_HOST}:{config.API_PORT}`",
+            f"**LUCI_API_KEY:** {'ayarlı' if config.LUCI_API_KEY else '❌ BOŞ'}",
+            f"**Durumlar:** `{counts}`",
+        ]
+        if active:
+            lines.append("**Aktif siparişler:**")
+            for o in active:
+                lines.append(
+                    f"• `#{o['id']}` {o['status']} — {o['growid']} @ {o['world_name']}"
+                )
+        else:
+            lines.append("_Aktif (pending/processing) sipariş yok._")
+        lines.append(
+            "\nLuci `withdraw_worker.lua` çalışıyor olmalı.\n"
+            "Konsolda `API GET /api/orders/next` satırları görünmeli."
+        )
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
     @app_commands.command(name="synccommands", description="[Admin] Slash komutları Discord'a yenile")
     @app_commands.guilds(*(_ADMIN_GUILDS or []))
     async def synccommands(self, interaction: discord.Interaction):

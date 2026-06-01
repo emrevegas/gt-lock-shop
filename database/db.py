@@ -1,6 +1,7 @@
 """SQLite persistence for balances, orders, and settings."""
 
 import json
+import logging
 import time
 from typing import Any, Optional
 
@@ -8,13 +9,21 @@ import aiosqlite
 
 from config import DB_PATH
 
+log = logging.getLogger("gt-lock-shop")
+
 _conn: Optional[aiosqlite.Connection] = None
 
 
 async def init_db() -> None:
     global _conn
-    _conn = await aiosqlite.connect(DB_PATH)
+    if _conn is not None:
+        return
+    path = DB_PATH.resolve()
+    log.info("SQLite database: %s", path)
+    _conn = await aiosqlite.connect(path)
     _conn.row_factory = aiosqlite.Row
+    await _conn.execute("PRAGMA journal_mode=WAL")
+    await _conn.execute("PRAGMA synchronous=NORMAL")
     await _conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS users (
@@ -72,6 +81,10 @@ async def init_db() -> None:
         await _conn.commit()
     except Exception:
         pass
+
+
+def get_conn_or_none() -> Optional[aiosqlite.Connection]:
+    return _conn
 
 
 def get_conn() -> aiosqlite.Connection:

@@ -1,5 +1,7 @@
 """Buy WL / DL / BGL with balance."""
 
+import logging
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -7,6 +9,8 @@ from discord.ext import commands
 from database import db
 from modules import orders
 from modules.shop import DISPLAY, ItemType, order_total
+
+log = logging.getLogger("gt-lock-shop")
 
 
 class GrowidModal(discord.ui.Modal, title="GrowID"):
@@ -85,6 +89,12 @@ class BuyConfirmView(discord.ui.View):
             return await interaction.response.send_message(msg, ephemeral=True)
 
         await db.set_growid(self.user_id, self.growid)
+        log.info(
+            "Discord purchase OK order #%s user=%s world=%s",
+            order["id"],
+            self.user_id,
+            order["world_name"],
+        )
         text = (
             f"🛒 Sipariş **#{order['id']}** oluşturuldu.\n"
             f"**{self.quantity}x** {DISPLAY[self.item_type]}\n"

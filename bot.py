@@ -10,8 +10,14 @@ import config
 from api_server import app as fastapi_app
 from database import db
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
 log = logging.getLogger("gt-lock-shop")
+# Uvicorn loglarını da aynı konsola yaz
+for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    logging.getLogger(_name).setLevel(logging.INFO)
 
 intents = discord.Intents.default()
 # Slash-only bot; message_content kapalı (uyarı normal, komutları etkilemez)
@@ -21,6 +27,17 @@ intents.members = True
 class GTLockBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
+
+    async def on_ready(self):
+        from modules.orders import count_orders_by_status
+
+        counts = await count_orders_by_status()
+        log.info(
+            "Discord ready: %s (%s) | order counts=%s",
+            self.user,
+            self.user.id if self.user else "?",
+            counts,
+        )
 
     async def _sync_app_commands(self) -> list[str]:
         names: list[str] = []
@@ -41,7 +58,6 @@ class GTLockBot(commands.Bot):
         return names
 
     async def setup_hook(self):
-        await db.init_db()
         for ext in ("cogs.shop", "cogs.wallet", "cogs.admin"):
             try:
                 await self.load_extension(ext)
@@ -168,6 +184,16 @@ async def run_api():
 async def main():
     if not config.DISCORD_TOKEN:
         raise SystemExit("DISCORD_TOKEN missing in .env")
+
+    await db.init_db()
+    log.info(
+        "Starting GT Lock Shop | DB=%s | API=http://%s:%s",
+        config.DB_PATH.resolve(),
+        config.API_HOST,
+        config.API_PORT,
+    )
+    if not config.LUCI_API_KEY:
+        log.warning("LUCI_API_KEY boş — Luci script API'ye bağlanamaz!")
 
     bot = GTLockBot()
     api_task = asyncio.create_task(run_api())

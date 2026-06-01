@@ -1,8 +1,11 @@
 """Withdraw order queue for Luci worker."""
 
+import logging
 import random
 import time
 from typing import Any, Optional
+
+log = logging.getLogger("gt-lock-shop")
 
 from config import WITHDRAW_WORLDS
 from database import db
@@ -56,7 +59,19 @@ async def create_order(
     )
     await conn.commit()
     order_id = cur.lastrowid
-    return await get_order(order_id)
+    created = await get_order(order_id)
+    if created:
+        log.info(
+            "[Order created] #%s user=%s growid=%s %sx%s world=%s status=%s",
+            order_id,
+            user_id,
+            growid.strip(),
+            quantity,
+            item_type,
+            world,
+            created.get("status"),
+        )
+    return created
 
 
 async def get_order(order_id: int) -> Optional[dict[str, Any]]:
