@@ -4,7 +4,7 @@
 ]]
 
 local API_URL = "http://127.0.0.1:8765"
-local API_KEY = "POWERFULSECRET"  -- .env LUCI_API_KEY ile aynı olmalı
+local API_KEY = "BURAYA_ENV_LUCI_API_KEY"  -- .env LUCI_API_KEY ile aynı olmalı
 
 local function log(msg)
   print("[GT-Shop-TEST] " .. tostring(msg))

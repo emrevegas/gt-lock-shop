@@ -4,7 +4,7 @@
 
 -- .env LUCI_API_KEY ile BİREBİR aynı olmalı
 local API_URL = "http://127.0.0.1:8765"
-local API_KEY = "POWERFULSECRET"
+local API_KEY = "BURAYA_ENV_LUCI_API_KEY"
 local POLL_MS = 2500
 local ORDER_TIMEOUT_MS = 120000
 local WARP_RETRY_MS = 5000
