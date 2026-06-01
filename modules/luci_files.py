@@ -47,9 +47,6 @@ def enqueue_order(order: dict[str, Any]) -> None:
     oid = int(order["id"])
     path = PENDING_DIR / f"{oid}.json"
     path.write_text(json.dumps(_order_payload(order), ensure_ascii=False), encoding="utf-8")
-    # Luci processing/active.txt ile yarım kalan siparişi sürdürür
-    active = PROCESSING_DIR / "active.txt"
-    active.write_text(str(oid), encoding="utf-8")
 
     lines = INDEX_FILE.read_text(encoding="utf-8").splitlines()
     ids = [x.strip() for x in lines if x.strip().isdigit()]
