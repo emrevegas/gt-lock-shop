@@ -327,75 +327,26 @@ end
 function GT_open_donation_box(box_x, box_y)
   pcall(function() bot:wrench(box_x, box_y) end)
   sleep(500)
-  pcall(function() bot:active(box_x, box_y) end)
-  sleep(400)
-  pcall(function()
-    local p = GameUpdatePacket.new()
-    p.type = 7
-    p.int_x = box_x
-    p.int_y = box_y
-    bot:sendRaw(p)
-  end)
-  sleep(400)
 end
 
-function GT_make_dialog_packet(dname, box_x, box_y, item_id, count, button, id_key, count_key)
-  local lines = {
-    "action|dialog_return",
-    "dialog_name|" .. dname,
-    "tilex|" .. box_x .. "|",
-    "tiley|" .. box_y .. "|",
-  }
-  if item_id and id_key and id_key ~= "" then
-    lines[#lines + 1] = id_key .. "|" .. item_id .. "|"
-  end
-  if count and count_key and count_key ~= "" then
-    lines[#lines + 1] = count_key .. "|" .. count .. "|"
-  end
-  if button and button ~= "" then
-    lines[#lines + 1] = "buttonClicked|" .. button
-  end
-  return table.concat(lines, "\n") .. "\n"
+-- Luci debug: give_item paketi 2x = donation box'a item düşer
+function GT_give_item_packet(box_x, box_y, item_id, count)
+  return "action|dialog_return\n" ..
+    "dialog_name|give_item\n" ..
+    "itemID|" .. tostring(item_id) .. "|\n" ..
+    "tilex|" .. tostring(box_x) .. "|\n" ..
+    "tiley|" .. tostring(box_y) .. "|\n" ..
+    "buttonClicked|give\n\n\n" ..
+    "count|" .. tostring(count) .. "\n" ..
+    "sign_text|\n\n\n"
 end
 
-function GT_build_donate_packets(box_x, box_y, item_id, count)
-  local packets = {}
-  local seen_name = {}
-  local names = {}
-
-  if state.donate_dialog_name ~= "" then
-    names[#names + 1] = state.donate_dialog_name
-  end
-  for _, n in ipairs({
-    "donation_box", "donation_box_edit", "donation", "donate",
-    "donate_box", "give_item", "item_picker",
-  }) do
-    names[#names + 1] = n
-  end
-
-  local id_keys = { "itemid", "itemID", "item_id" }
-  local count_keys = { "itemcount", "count", "amount" }
-  local buttons = { "donate", "give", "add", "additem", "ok", "OK", "accept", "store" }
-
-  for _, dname in ipairs(names) do
-    if dname and dname ~= "" and not seen_name[dname] then
-      seen_name[dname] = true
-      -- Önce picker/dialog aç (item göndermeden)
-      packets[#packets + 1] = GT_make_dialog_packet(dname, box_x, box_y, nil, nil, "donate", "", "")
-      packets[#packets + 1] = GT_make_dialog_packet(dname, box_x, box_y, nil, nil, "give", "", "")
-
-      for _, ik in ipairs(id_keys) do
-        for _, ck in ipairs(count_keys) do
-          packets[#packets + 1] = GT_make_dialog_packet(dname, box_x, box_y, item_id, count, "", ik, ck)
-          for _, btn in ipairs(buttons) do
-            packets[#packets + 1] = GT_make_dialog_packet(dname, box_x, box_y, item_id, count, btn, ik, ck)
-          end
-        end
-      end
-    end
-  end
-
-  return packets
+function GT_send_give_item(box_x, box_y, item_id, count)
+  local pkt = GT_give_item_packet(box_x, box_y, item_id, count)
+  bot:sendPacket(2, pkt)
+  sleep(400)
+  bot:sendPacket(2, pkt)
+  sleep(600)
 end
 
 function GT_inventory_decreased(before, item_id, min_delta)
@@ -410,59 +361,25 @@ function GT_donate_chunk(box_x, box_y, item_id, count)
   if before < count then return false end
 
   state.deposit_done = false
-  state.donate_dialog_name = ""
   state.donate_box_x = box_x
   state.donate_box_y = box_y
 
   GT_log("Donate " .. count .. "x item " .. item_id .. " @ " .. box_x .. "," .. box_y)
   if not GT_move_near_tile(box_x, box_y) then
-    GT_log("Could not reach donation box — trying wrench anyway")
+    GT_log("Could not reach donation box — trying anyway")
   end
 
-  local packets = GT_build_donate_packets(box_x, box_y, item_id, count)
-
-  for round = 1, 4 do
+  for attempt = 1, 3 do
     if GT_inventory_decreased(before, item_id, 1) or state.deposit_done then
-      GT_log("Donate OK (round " .. round .. ")")
+      GT_log("Donate OK")
       return true
     end
 
-    state.donate_dialog_name = ""
+    GT_log("give_item x2 attempt " .. attempt .. "/3")
     GT_open_donation_box(box_x, box_y)
+    sleep(500)
+    GT_send_give_item(box_x, box_y, item_id, count)
     listenEvents(2)
-
-    if state.donate_dialog_name ~= "" then
-      GT_log("Using captured dialog: " .. state.donate_dialog_name)
-      -- Yakalanan dialog ile öncelikli paketler
-      local priority = {
-        GT_make_dialog_packet(state.donate_dialog_name, box_x, box_y, item_id, count, "donate", "itemid", "itemcount"),
-        GT_make_dialog_packet(state.donate_dialog_name, box_x, box_y, item_id, count, "give", "itemid", "itemcount"),
-        GT_make_dialog_packet(state.donate_dialog_name, box_x, box_y, item_id, count, "", "itemid", "itemcount"),
-        GT_make_dialog_packet(state.donate_dialog_name, box_x, box_y, item_id, count, "donate", "itemID", "count"),
-      }
-      for _, pkt in ipairs(priority) do
-        bot:sendPacket(2, pkt)
-        sleep(400)
-        listenEvents(1)
-        if GT_inventory_decreased(before, item_id, 1) or state.deposit_done then
-          GT_log("Donate OK (priority packet)")
-          return true
-        end
-      end
-    end
-
-    GT_log("Donate attempt round " .. round .. "/4")
-    for i, pkt in ipairs(packets) do
-      if GT_inventory_decreased(before, item_id, 1) or state.deposit_done then
-        GT_log("Donate OK (packet " .. i .. ")")
-        return true
-      end
-      bot:sendPacket(2, pkt)
-      sleep(320)
-      if i % 6 == 0 then listenEvents(1) end
-    end
-    listenEvents(2)
-    sleep(400)
   end
 
   if GT_inventory_decreased(before, item_id, 1) or state.deposit_done then
