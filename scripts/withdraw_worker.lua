@@ -1,6 +1,6 @@
 --[[
-  GT Lock Shop — Luci donation box withdraw (dosya kuyruğu)
-  Sipariş: kullanıcının dünyasına git → erişilebilir donation box bul → item bırak
+  GT Lock Shop — Luci withdraw (dosya kuyruğu)
+  Sipariş: kullanıcının dünyasına git → Display Box (1422) bul → üstüne drop
 ]]
 
 local QUEUE_BASE = "C:/Users/Administrator/Desktop/lock/data/luci"
@@ -13,14 +13,7 @@ local ITEM_WL = 242
 local ITEM_DL = 1796
 local ITEM_BGL = 7188
 
--- Bilinen donation box foreground ID'leri (sunucuya göre ekle)
-local DONATION_BOX_IDS = {
-  [1452] = true,
-  [2810] = true,
-  [9878] = true,
-  [9984] = true,
-  [11586] = true, -- Donut Donation Box (bazı sürümler)
-}
+local DISPLAY_BOX_FG = 1422
 
 local PENDING_DIR = ""
 local PROCESSING_DIR = ""
@@ -36,11 +29,7 @@ bot.auto_ban = false
 local state = {
   busy = false,
   order = nil,
-  deposit_done = false,
-  donate_dialog_name = "",
   order_started_ms = 0,
-  donate_box_x = -1,
-  donate_box_y = -1,
 }
 
 function GT_log(msg)
@@ -244,14 +233,14 @@ function GT_tile_has_access(x, y)
   return ok and result == true
 end
 
-function GT_is_donation_box(fg)
+function GT_is_display_box(fg)
   if not fg or fg == 0 then return false end
-  if DONATION_BOX_IDS[fg] then return true end
+  if fg == DISPLAY_BOX_FG then return true end
   local ok, info = pcall(function() return getInfo(fg) end)
   if not ok or not info then return false end
   local name = tostring(info.name or ""):lower()
   if name:find("seed", 1, true) then return false end
-  return name:find("donation", 1, true) ~= nil and name:find("box", 1, true) ~= nil
+  return name:find("display box", 1, true) ~= nil
 end
 
 function GT_path_exists(x, y)
@@ -260,49 +249,37 @@ function GT_path_exists(x, y)
   return false
 end
 
--- hasAccess kutunun kendisinde false olabilir; komşu tile veya path yeterli
-function GT_can_reach_box(box_x, box_y)
-  local offsets = {
-    { 0, 1 }, { 0, -1 }, { 1, 0 }, { -1, 0 },
-    { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 },
-  }
-  for _, off in ipairs(offsets) do
-    local tx, ty = box_x + off[1], box_y + off[2]
-    if GT_path_exists(tx, ty) then return true end
-    if GT_tile_has_access(tx, ty) then return true end
-  end
-  -- Yol bulunamazsa yine dene (findPath runtime'da çalışabilir)
-  return true
+function GT_can_reach_tile(x, y)
+  if GT_path_exists(x, y) then return true end
+  if GT_tile_has_access(x, y) then return true end
+  return false
 end
 
-function GT_find_donation_boxes()
+function GT_find_display_boxes()
   local world = bot:getWorld()
   if not world then return {} end
   local boxes = {}
   for _, tile in pairs(world:getTiles()) do
-    if GT_is_donation_box(tile.fg) then
-      GT_log("Donation box fg=" .. tile.fg .. " @ " .. tile.x .. "," .. tile.y)
+    if GT_is_display_box(tile.fg) then
+      GT_log("Display box fg=" .. tile.fg .. " @ " .. tile.x .. "," .. tile.y)
       boxes[#boxes + 1] = { x = tile.x, y = tile.y, fg = tile.fg }
     end
   end
   return boxes
 end
 
-function GT_find_accessible_donation_boxes()
-  local all = GT_find_donation_boxes()
-  if #all == 0 then
-    GT_log("No donation box tiles in world scan")
-    return {}
-  end
-  GT_log("Donation boxes in world: " .. #all)
+function GT_find_reachable_display_boxes()
+  local all = GT_find_display_boxes()
+  if #all == 0 then return {} end
+  GT_log("Display boxes in world: " .. #all)
   local reachable = {}
   for _, box in ipairs(all) do
-    if GT_can_reach_box(box.x, box.y) then
+    if GT_can_reach_tile(box.x, box.y) or GT_can_reach_tile(box.x, box.y - 1) then
       reachable[#reachable + 1] = box
     end
   end
   if #reachable == 0 then
-    GT_log("Reach check failed — trying first box anyway")
+    GT_log("Reach check failed — trying first display anyway")
     return { all[1] }
   end
   return reachable
@@ -324,29 +301,30 @@ function GT_move_near_tile(x, y)
   return bot:isInTile(x, y)
 end
 
-function GT_open_donation_box(box_x, box_y)
-  pcall(function() bot:wrench(box_x, box_y) end)
-  sleep(500)
+function GT_drop_positions_for_display(dx, dy)
+  -- Display üstü + komşu tile'lar (drop display'e düşsün diye)
+  return {
+    { dx, dy - 1 },
+    { dx - 1, dy },
+    { dx + 1, dy },
+    { dx, dy + 1 },
+    { dx - 1, dy - 1 },
+    { dx + 1, dy - 1 },
+  }
 end
 
--- Luci debug: give_item paketi 2x = donation box'a item düşer
-function GT_give_item_packet(box_x, box_y, item_id, count)
-  return "action|dialog_return\n" ..
-    "dialog_name|give_item\n" ..
+function GT_try_drop_at(item_id, count)
+  pcall(function() bot:fastDrop(item_id, count) end)
+  sleep(350)
+  bot:sendPacket(2, "action|drop\nitemID|" .. tostring(item_id) .. "|\n")
+  sleep(300)
+  bot:sendPacket(2,
+    "action|dialog_return\n" ..
+    "dialog_name|drop_item\n" ..
     "itemID|" .. tostring(item_id) .. "|\n" ..
-    "tilex|" .. tostring(box_x) .. "|\n" ..
-    "tiley|" .. tostring(box_y) .. "|\n" ..
-    "buttonClicked|give\n\n\n" ..
-    "count|" .. tostring(count) .. "\n" ..
-    "sign_text|\n\n\n"
-end
-
-function GT_send_give_item(box_x, box_y, item_id, count)
-  local pkt = GT_give_item_packet(box_x, box_y, item_id, count)
-  bot:sendPacket(2, pkt)
-  sleep(400)
-  bot:sendPacket(2, pkt)
-  sleep(600)
+    "count|" .. tostring(count) .. "\n"
+  )
+  sleep(500)
 end
 
 function GT_inventory_decreased(before, item_id, min_delta)
@@ -356,48 +334,49 @@ function GT_inventory_decreased(before, item_id, min_delta)
   return false
 end
 
-function GT_donate_chunk(box_x, box_y, item_id, count)
+function GT_drop_on_display(display_x, display_y, item_id, count)
   local before = GT_inventory_count(item_id)
   if before < count then return false end
 
-  state.deposit_done = false
-  state.donate_box_x = box_x
-  state.donate_box_y = box_y
+  GT_log("Drop " .. count .. "x item " .. item_id .. " on display @ " .. display_x .. "," .. display_y)
 
-  GT_log("Donate " .. count .. "x item " .. item_id .. " @ " .. box_x .. "," .. box_y)
-  if not GT_move_near_tile(box_x, box_y) then
-    GT_log("Could not reach donation box — trying anyway")
-  end
-
+  local positions = GT_drop_positions_for_display(display_x, display_y)
   for attempt = 1, 3 do
-    if GT_inventory_decreased(before, item_id, 1) or state.deposit_done then
-      GT_log("Donate OK")
+    if GT_inventory_decreased(before, item_id, 1) then
+      GT_log("Drop OK")
       return true
     end
 
-    GT_log("give_item x2 attempt " .. attempt .. "/3")
-    GT_open_donation_box(box_x, box_y)
-    sleep(500)
-    GT_send_give_item(box_x, box_y, item_id, count)
-    listenEvents(2)
+    GT_log("Drop attempt " .. attempt .. "/3")
+    for _, pos in ipairs(positions) do
+      if GT_order_expired() then return false end
+      pcall(function() bot:findPath(pos[1], pos[2]) end)
+      sleep(600)
+      if bot:isInTile(pos[1], pos[2]) or GT_move_near_tile(display_x, display_y) then
+        GT_try_drop_at(item_id, count)
+        listenEvents(1)
+        if GT_inventory_decreased(before, item_id, 1) then
+          GT_log("Drop OK from " .. pos[1] .. "," .. pos[2])
+          return true
+        end
+      end
+    end
+    listenEvents(1)
   end
 
-  if GT_inventory_decreased(before, item_id, 1) or state.deposit_done then
-    return true
-  end
-  GT_log("Donate failed — inv before=" .. before .. " after=" .. GT_inventory_count(item_id))
+  GT_log("Drop failed — inv before=" .. before .. " after=" .. GT_inventory_count(item_id))
   return false
 end
 
-function GT_donate_all(box, item_id, total_qty)
+function GT_drop_all_on_display(box, item_id, total_qty)
   local remaining = total_qty
   while remaining > 0 do
     if GT_order_expired() then return false, "order_timeout_2min" end
     local chunk = remaining
     if chunk > MAX_STACK then chunk = MAX_STACK end
-    local ok = GT_donate_chunk(box.x, box.y, item_id, chunk)
+    local ok = GT_drop_on_display(box.x, box.y, item_id, chunk)
     if not ok then
-      return false, "donation_failed"
+      return false, "drop_failed"
     end
     remaining = remaining - chunk
     sleep(500)
@@ -408,11 +387,7 @@ end
 function GT_clear_state()
   state.busy = false
   state.order = nil
-  state.deposit_done = false
-  state.donate_dialog_name = ""
   state.order_started_ms = 0
-  state.donate_box_x = -1
-  state.donate_box_y = -1
 end
 
 function GT_finish_fail(order, reason)
@@ -432,8 +407,6 @@ end
 function GT_run_order(order)
   state.busy = true
   state.order = order
-  state.deposit_done = false
-  state.donate_dialog_name = ""
   state.order_started_ms = GT_now_ms()
 
   local item_id = order.item_id or GT_item_id_for_type(order.item_type)
@@ -464,54 +437,26 @@ function GT_run_order(order)
   end
 
   sleep(2000)
-  local boxes = GT_find_accessible_donation_boxes()
+  local boxes = GT_find_reachable_display_boxes()
   if #boxes == 0 then
-    GT_log("Rescan donation boxes in 3s (world load)...")
+    GT_log("Rescan display boxes in 3s (world load)...")
     sleep(3000)
-    boxes = GT_find_accessible_donation_boxes()
+    boxes = GT_find_reachable_display_boxes()
   end
   if #boxes == 0 then
-    GT_finish_fail(order, "no_donation_box")
+    GT_finish_fail(order, "no_display_box")
     return
   end
 
-  GT_log("Found " .. #boxes .. " accessible donation box(es)")
+  GT_log("Found " .. #boxes .. " display box(es)")
   local box = boxes[1]
-  local ok, reason = GT_donate_all(box, item_id, qty)
+  local ok, reason = GT_drop_all_on_display(box, item_id, qty)
   if ok then
     GT_finish_success(order)
   else
-    GT_finish_fail(order, reason ~= "" and reason or "donation_failed")
+    GT_finish_fail(order, reason ~= "" and reason or "drop_failed")
   end
 end
-
-function on_variantlist(variant, netid)
-  if not state.order then return end
-  local head = variant:get(0):getString()
-  if head == "OnDialogRequest" then
-    local dlg = variant:get(1):getString() or ""
-    local dname = dlg:match("end_dialog|([^|\n]+)|")
-    if dname then
-      state.donate_dialog_name = dname
-      GT_log("Dialog captured: " .. dname)
-    end
-  elseif head == "OnConsoleMessage" or head == "OnTalkBubble" then
-    local msg = variant:get(1):getString() or ""
-    local low = msg:lower()
-    if low:find("has donated", 1, true) or low:find("donated", 1, true) then
-      state.deposit_done = true
-      GT_log("Donate confirmed (chat)")
-    end
-  elseif head == "OnTextOverlay" then
-    local msg = variant:get(1):getString() or ""
-    local low = msg:lower()
-    if low:find("has donated", 1, true) then
-      state.deposit_done = true
-    end
-  end
-end
-
-addEvent(Event.variantlist, on_variantlist)
 
 GT_init_paths()
 

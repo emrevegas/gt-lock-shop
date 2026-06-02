@@ -110,8 +110,8 @@ class BuyConfirmView(discord.ui.View):
             f"**{self.quantity}x** {DISPLAY[self.item_type]}\n"
             f"GrowID: `{self.growid}`\n"
             f"Dünya: `{order['world_name']}`\n\n"
-            f"Bot dünyana gidip **erişebildiği bir bağış kutusuna** item bırakacak.\n"
-            f"Dünyanda erişilebilir bir **Donation Box** olduğundan emin ol."
+            f"Bot dünyana gidip **Display Box** (id 1422) bulup üstüne item drop edecek.\n"
+            f"Dünyanda erişilebilir bir **Display Box** olduğundan emin ol."
         )
         for child in self.children:
             child.disabled = True
@@ -155,7 +155,7 @@ class Shop(commands.Cog):
         view = BuyConfirmView(interaction.user.id, item_type, quantity, total)
         await interaction.response.send_message(
             f"**{quantity}x** {DISPLAY[item_type]} — Toplam: **{total:.2f}**\n"
-            f"Onayla; GrowID ve **bağış kutusunun olduğu dünya** adını gir.",
+            f"Onayla; GrowID ve **Display Box'ın olduğu dünya** adını gir.",
             view=view,
             ephemeral=True,
         )

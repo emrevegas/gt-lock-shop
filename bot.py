@@ -111,7 +111,7 @@ class GTLockBot(commands.Bot):
                     await user.send(
                         f"✅ **Teslimat tamamlandı** — Sipariş `#{order['id']}`\n"
                         f"{order['quantity']}x {DISPLAY.get(order['item_type'], order['item_type'])} "
-                        f"→ dünya `{order['world_name']}` bağış kutusuna bırakıldı."
+                        f"→ dünya `{order['world_name']}` Display Box üzerine drop edildi."
                     )
                 except discord.HTTPException:
                     pass
@@ -128,10 +128,14 @@ class GTLockBot(commands.Bot):
                         reason = "Bot hedef dünyaya giremedi"
                     elif reason == "bot_offline":
                         reason = "Growtopia botu çevrimiçi değil"
+                    elif reason == "no_display_box":
+                        reason = "Dünyada Display Box (1422) bulunamadı"
+                    elif reason == "drop_failed":
+                        reason = "Display Box üzerine drop yapılamadı"
                     elif reason == "no_donation_box":
-                        reason = "Dünyada erişilebilir bağış kutusu bulunamadı"
+                        reason = "Dünyada Display Box bulunamadı"
                     elif reason == "donation_failed":
-                        reason = "Bağış kutusuna item konulamadı"
+                        reason = "Teslimat başarısız (drop)"
                     elif reason == "invalid_world":
                         reason = "Geçersiz dünya adı"
                     await user.send(
