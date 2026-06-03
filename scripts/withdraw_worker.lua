@@ -332,16 +332,24 @@ function GT_find_reachable_display_boxes()
 end
 
 function GT_adjacent_stand_spots(dx, dy)
-  -- Drop yatay yüz gerektirir; display tile koordinatına göre sol/sağ komşu
+  -- Display tile (dx,dy) etrafındaki 4 komşu; yan yana kutularda üst/alt gerekir
   return {
-    { x = dx - 1, y = dy },
-    { x = dx + 1, y = dy },
+    { x = dx, y = dy - 1, kind = "above" },
+    { x = dx - 1, y = dy, kind = "left" },
+    { x = dx + 1, y = dy, kind = "right" },
+    { x = dx, y = dy + 1, kind = "below" },
   }
+end
+
+function GT_spot_priority(spot, dx, dy)
+  if spot.kind == "above" then return 0 end
+  if spot.kind == "left" or spot.kind == "right" then return 1 end
+  return 2
 end
 
 function GT_display_has_stand_spot(dx, dy)
   for _, spot in ipairs(GT_adjacent_stand_spots(dx, dy)) do
-    if GT_tile_standable(spot.x, spot.y) and GT_can_reach_tile(spot.x, spot.y) then
+    if GT_tile_standable(spot.x, spot.y) then
       return true
     end
   end
@@ -416,35 +424,71 @@ function GT_stand_adjacent_to_display(dx, dy)
   local bx0, by0 = GT_bot_tile_xy()
   local candidates = {}
   for _, spot in ipairs(GT_adjacent_stand_spots(dx, dy)) do
-    if GT_tile_standable(spot.x, spot.y) and GT_can_reach_tile(spot.x, spot.y) then
+    if GT_tile_standable(spot.x, spot.y) then
       local dist = 999
       if bx0 then dist = GT_tile_distance(bx0, by0, spot.x, spot.y) end
-      candidates[#candidates + 1] = { x = spot.x, y = spot.y, dist = dist }
+      candidates[#candidates + 1] = {
+        x = spot.x, y = spot.y, dist = dist,
+        kind = spot.kind, pri = GT_spot_priority(spot, dx, dy),
+      }
     else
-      GT_log("Skip stand " .. spot.x .. "," .. spot.y .. " (blocked or no path)")
+      local fg = "?"
+      local ok, t = pcall(function() return getTile(spot.x, spot.y) end)
+      if ok and t then fg = tostring(t.fg) end
+      GT_log("Skip stand " .. spot.x .. "," .. spot.y .. " fg=" .. fg .. " (" .. spot.kind .. ")")
     end
   end
-  table.sort(candidates, function(a, b) return a.dist < b.dist end)
+  table.sort(candidates, function(a, b)
+    if a.pri ~= b.pri then return a.pri < b.pri end
+    return a.dist < b.dist
+  end)
 
   for _, spot in ipairs(candidates) do
-    GT_log("Path to stand " .. spot.x .. "," .. spot.y .. " → display " .. dx .. "," .. dy)
+    GT_log("Path to stand " .. spot.x .. "," .. spot.y .. " (" .. spot.kind .. ") → display " .. dx .. "," .. dy)
     if GT_walk_to_tile(spot.x, spot.y) and bot:isInTile(spot.x, spot.y) then
-      GT_face_toward_display(spot.x, spot.y, dx, dy)
       GT_log("Ready stand " .. spot.x .. "," .. spot.y .. " → display " .. dx .. "," .. dy)
-      return true, spot.x, spot.y
+      return true, spot.x, spot.y, spot.kind
     end
     GT_log("Could not reach stand tile " .. spot.x .. "," .. spot.y)
   end
   return false
 end
 
-function GT_attempt_drop_at_display(sx, sy, dx, dy, item_id, count, before)
+function GT_attempt_drop_at_display(sx, sy, dx, dy, kind, item_id, count, before)
+  pcall(function() bot.auto_transfer.drop_vertical = true end)
+
+  if kind == "above" or (sx == dx and sy < dy) then
+    pcall(function() bot:setDirection(false) end)
+    sleep(500)
+    GT_log("Vertical drop (above) " .. sx .. "," .. sy .. " → display " .. dx .. "," .. dy)
+    GT_drop_once(item_id, count)
+    listenEvents(1)
+    if GT_inventory_dropped(before, item_id, count) then return true end
+    pcall(function() bot:drop(item_id, count) end)
+    sleep(800)
+    listenEvents(1)
+    return GT_inventory_dropped(before, item_id, count)
+  end
+
+  if kind == "below" or (sx == dx and sy > dy) then
+    pcall(function() bot:setDirection(false) end)
+    sleep(500)
+    GT_log("Vertical drop (below) " .. sx .. "," .. sy .. " → display " .. dx .. "," .. dy)
+    GT_drop_once(item_id, count)
+    listenEvents(1)
+    if GT_inventory_dropped(before, item_id, count) then return true end
+    pcall(function() bot:drop(item_id, count) end)
+    sleep(800)
+    listenEvents(1)
+    return GT_inventory_dropped(before, item_id, count)
+  end
+
   local primary = GT_face_left_toward_display(sx, sy, dx, dy)
   local faces = { primary, not primary }
   for fi, face_left in ipairs(faces) do
     pcall(function() bot:setDirection(face_left) end)
     sleep(500)
-    GT_log("Drop try " .. fi .. " face_left=" .. tostring(face_left))
+    GT_log("Horizontal drop try " .. fi .. " face_left=" .. tostring(face_left))
     GT_drop_once(item_id, count)
     listenEvents(1)
     if GT_inventory_dropped(before, item_id, count) then
@@ -502,11 +546,12 @@ function GT_drop_on_display(display_x, display_y, item_id, count)
 
   GT_log("Drop " .. count .. "x item " .. item_id .. " on display tile " .. display_x .. "," .. display_y)
 
-  local stood, sx, sy = GT_stand_adjacent_to_display(display_x, display_y)
+  local stood, sx, sy, skind = GT_stand_adjacent_to_display(display_x, display_y)
   if not stood then
-    GT_log("No reachable stand tile beside display " .. display_x .. "," .. display_y)
+    GT_log("No stand tile beside display " .. display_x .. "," .. display_y)
     return false
   end
+  if not skind then skind = "left" end
 
   for attempt = 1, 2 do
     if GT_order_expired() then return false end
@@ -515,12 +560,12 @@ function GT_drop_on_display(display_x, display_y, item_id, count)
       GT_log("Drop OK on " .. display_x .. "," .. display_y .. " (inv -" .. delta .. ")")
       return true
     end
-    GT_log("Drop attempt " .. attempt .. "/2 stand " .. sx .. "," .. sy)
+    GT_log("Drop attempt " .. attempt .. "/2 stand " .. sx .. "," .. sy .. " (" .. skind .. ")")
     if not bot:isInTile(sx, sy) then
       GT_log("Not on stand tile, re-walk")
       if not GT_walk_to_tile(sx, sy) then return false end
     end
-    if GT_attempt_drop_at_display(sx, sy, display_x, display_y, item_id, count, before) then
+    if GT_attempt_drop_at_display(sx, sy, display_x, display_y, skind, item_id, count, before) then
       local delta = before - GT_inventory_count(item_id)
       GT_log("Drop OK on " .. display_x .. "," .. display_y .. " (inv -" .. delta .. ")")
       return true
