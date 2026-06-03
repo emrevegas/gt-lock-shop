@@ -5,12 +5,23 @@ from discord import app_commands
 from discord.ext import commands
 
 from database import db
+from modules.bot_balance import format_bot_balance_message
 from modules.crypto_deposit import check_user_deposits, extend_monitor, get_or_create_wallet
 
 
 class Wallet(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    @app_commands.command(
+        name="bot_balance",
+        description="Growtopia botunun WL / DL / BGL stoğu (Luci dosyasından)",
+    )
+    async def bot_balance(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            format_bot_balance_message(),
+            ephemeral=True,
+        )
 
     @app_commands.command(name="balance", description="Bakiyeni göster")
     async def balance(self, interaction: discord.Interaction):

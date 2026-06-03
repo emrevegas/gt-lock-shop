@@ -16,8 +16,8 @@ Discord bot + Lucifer (Luci) script ile **WL / DL / BGL** satışı. Kullanıcı
 
 ```
 [Kullanıcı Discord] → /buy (GrowID + dünya) → SQLite + data/luci/pending/{id}.json
-[Luci withdraw_worker.lua] → dünyaya git → Display Box (1422) bul → drop
-                         → data/luci/results/{id}.json
+[Luci withdraw_worker.lua] → dünyaya git → Display Box (1422) bul → drop → eve dön
+                         → data/luci/results/{id}.json + bot_balance.json
 [bot.py] → results okur → DB + Discord DM
 ```
 
@@ -35,7 +35,9 @@ python bot.py
 ### Luci
 
 1. `QUEUE_BASE` = `data/luci` tam yolu
-2. `scripts/withdraw_worker.lua` Lucifer'de çalıştır
+2. `scripts/withdraw_worker.lua` içinde `BOT_HOME_WORLD` / `BOT_HOME_DOOR` ayarla
+3. Script Lucifer'de çalıştır — envanter `data/luci/bot_balance.json` dosyasına yazılır
+4. Discord: `/bot_balance` ile bot stoğunu gör
 
 ## Akış (satın alma)
 

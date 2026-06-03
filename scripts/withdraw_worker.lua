@@ -4,6 +4,11 @@
 ]]
 
 local QUEUE_BASE = "C:/Users/Administrator/Desktop/lock/data/luci"
+
+-- Sipariş bitince bot bu dünyaya döner (kapı varsa WORLD|DOOR)
+local BOT_HOME_WORLD = "BOTHOUSE"
+local BOT_HOME_DOOR = ""
+
 local POLL_MS = 2500
 local ORDER_TIMEOUT_MS = 120000
 local WARP_RETRY_MS = 5000
@@ -20,6 +25,7 @@ local PROCESSING_DIR = ""
 local RESULTS_DIR = ""
 local INDEX_FILE = ""
 local ACTIVE_FILE = ""
+local BALANCE_FILE = ""
 
 local bot = getBot()
 bot.auto_reconnect = true
@@ -53,7 +59,47 @@ function GT_init_paths()
   RESULTS_DIR = base .. "/results"
   INDEX_FILE = base .. "/pending_index.txt"
   ACTIVE_FILE = base .. "/processing/active.txt"
+  BALANCE_FILE = base .. "/bot_balance.json"
   GT_log("Queue path: " .. base)
+end
+
+function GT_json_escape(s)
+  s = tostring(s or "")
+  s = s:gsub("\\", "\\\\")
+  s = s:gsub('"', '\\"')
+  return s
+end
+
+function GT_write_bot_balance()
+  if BALANCE_FILE == "" then return end
+  local wl = GT_inventory_count(ITEM_WL)
+  local dl = GT_inventory_count(ITEM_DL)
+  local bgl = GT_inventory_count(ITEM_BGL)
+  local world = ""
+  if bot:isInWorld() and bot:getWorld() then
+    world = tostring(bot:getWorld().name or "")
+  end
+  local json = string.format(
+    '{"wl":%d,"dl":%d,"bgl":%d,"at":%d,"bot":"%s","world":"%s"}',
+    wl, dl, bgl, os.time(),
+    GT_json_escape(bot.name),
+    GT_json_escape(world)
+  )
+  write(BALANCE_FILE, json)
+end
+
+function GT_go_home()
+  local home = tostring(BOT_HOME_WORLD or ""):gsub("%s+", "")
+  if home == "" then return end
+  local dest = string.upper(home)
+  local door = tostring(BOT_HOME_DOOR or ""):gsub("%s+", "")
+  if door ~= "" then
+    dest = dest .. "|" .. door
+  end
+  GT_log("Going home -> " .. dest)
+  GT_warp_to_world(dest)
+  sleep(1500)
+  GT_write_bot_balance()
 end
 
 function GT_now_ms()
@@ -393,6 +439,8 @@ function GT_finish_fail(order, reason)
   GT_write_result(order.id, "failed", reason)
   write(ACTIVE_FILE, "")
   GT_clear_state()
+  GT_write_bot_balance()
+  GT_go_home()
 end
 
 function GT_finish_success(order)
@@ -400,6 +448,8 @@ function GT_finish_success(order)
   GT_log("Done #" .. order.id)
   write(ACTIVE_FILE, "")
   GT_clear_state()
+  GT_write_bot_balance()
+  GT_go_home()
 end
 
 function GT_run_order(order)
@@ -457,9 +507,11 @@ function GT_run_order(order)
 end
 
 GT_init_paths()
+GT_write_bot_balance()
 
 while true do
   if not state.busy then
+    GT_write_bot_balance()
     local order = GT_claim_next_order()
     if order then
       GT_run_order(order)
