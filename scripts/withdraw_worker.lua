@@ -1,6 +1,6 @@
 --[[
   GT Lock Shop — Luci withdraw (dosya kuyruğu)
-  Sipariş: kullanıcının dünyasına git → Display Box (1422) bul → üstüne drop
+  Sipariş: kullanıcının dünyasına git → Display Box (1422) bul → sol/sağdan yüzünü kutuya çevir → tek drop
 ]]
 
 local QUEUE_BASE = "C:/Users/Administrator/Desktop/lock/data/luci"
@@ -274,7 +274,7 @@ function GT_find_reachable_display_boxes()
   GT_log("Display boxes in world: " .. #all)
   local reachable = {}
   for _, box in ipairs(all) do
-    if GT_can_reach_tile(box.x, box.y) or GT_can_reach_tile(box.x, box.y - 1) then
+    if GT_can_reach_tile(box.x - 1, box.y) or GT_can_reach_tile(box.x + 1, box.y) then
       reachable[#reachable + 1] = box
     end
   end
@@ -285,53 +285,58 @@ function GT_find_reachable_display_boxes()
   return reachable
 end
 
-function GT_move_near_tile(x, y)
-  local offsets = {
-    { 0, 1 }, { 0, -1 }, { 1, 0 }, { -1, 0 },
-    { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 },
-  }
-  for _, off in ipairs(offsets) do
-    local tx, ty = x + off[1], y + off[2]
-    pcall(function() bot:findPath(tx, ty) end)
-    sleep(700)
-    if bot:isInTile(tx, ty) then return true end
+function GT_tile_standable(x, y)
+  local ok, tile = pcall(function() return getTile(x, y) end)
+  if not ok or not tile then return false end
+  if tile.fg == 0 then return true end
+  if tile.fg == DISPLAY_BOX_FG then return false end
+  local info_ok, info = pcall(function() return getInfo(tile.fg) end)
+  if info_ok and info and (info.collision_type or 0) > 0 then
+    return false
   end
-  pcall(function() bot:findPath(x, y) end)
-  sleep(700)
-  return bot:isInTile(x, y)
+  return true
 end
 
-function GT_drop_positions_for_display(dx, dy)
-  -- Display üstü + komşu tile'lar (drop display'e düşsün diye)
-  return {
-    { dx, dy - 1 },
-    { dx - 1, dy },
-    { dx + 1, dy },
-    { dx, dy + 1 },
-    { dx - 1, dy - 1 },
-    { dx + 1, dy - 1 },
+-- Display kutusunun soluna veya sağına git; yüzü kutuya çevir (drop ön tile = display).
+function GT_stand_beside_display(dx, dy)
+  local sides = {
+    { x = dx - 1, y = dy, face_left = false },
+    { x = dx + 1, y = dy, face_left = true },
   }
+  for _, side in ipairs(sides) do
+    if not GT_tile_standable(side.x, side.y) then
+      GT_log("Not standable: " .. side.x .. "," .. side.y)
+    elseif not GT_can_reach_tile(side.x, side.y) then
+      GT_log("No path to: " .. side.x .. "," .. side.y)
+    else
+      pcall(function() bot:findPath(side.x, side.y) end)
+      sleep(800)
+      if bot:isInTile(side.x, side.y) then
+        pcall(function() bot:setDirection(side.face_left) end)
+        sleep(350)
+        GT_log("Beside display @ " .. side.x .. "," .. side.y .. " face_left=" .. tostring(side.face_left))
+        return true
+      end
+    end
+  end
+  return false
 end
 
-function GT_try_drop_at(item_id, count)
-  pcall(function() bot:fastDrop(item_id, count) end)
-  sleep(350)
+function GT_drop_once(item_id, count)
   bot:sendPacket(2, "action|drop\nitemID|" .. tostring(item_id) .. "|\n")
-  sleep(300)
+  sleep(450)
   bot:sendPacket(2,
     "action|dialog_return\n" ..
     "dialog_name|drop_item\n" ..
     "itemID|" .. tostring(item_id) .. "|\n" ..
     "count|" .. tostring(count) .. "\n"
   )
-  sleep(500)
+  sleep(700)
 end
 
-function GT_inventory_decreased(before, item_id, min_delta)
+function GT_inventory_dropped(before, item_id, amount)
   local after = GT_inventory_count(item_id)
-  if after < before then return true end
-  if min_delta and (before - after) >= min_delta then return true end
-  return false
+  return (before - after) >= amount
 end
 
 function GT_drop_on_display(display_x, display_y, item_id, count)
@@ -340,27 +345,20 @@ function GT_drop_on_display(display_x, display_y, item_id, count)
 
   GT_log("Drop " .. count .. "x item " .. item_id .. " on display @ " .. display_x .. "," .. display_y)
 
-  local positions = GT_drop_positions_for_display(display_x, display_y)
-  for attempt = 1, 3 do
-    if GT_inventory_decreased(before, item_id, 1) then
-      GT_log("Drop OK")
+  if not GT_stand_beside_display(display_x, display_y) then
+    GT_log("Cannot stand left/right of display box")
+    return false
+  end
+
+  for attempt = 1, 2 do
+    if GT_order_expired() then return false end
+    if GT_inventory_dropped(before, item_id, count) then
+      local delta = before - GT_inventory_count(item_id)
+      GT_log("Drop OK (inv -" .. delta .. ")")
       return true
     end
-
-    GT_log("Drop attempt " .. attempt .. "/3")
-    for _, pos in ipairs(positions) do
-      if GT_order_expired() then return false end
-      pcall(function() bot:findPath(pos[1], pos[2]) end)
-      sleep(600)
-      if bot:isInTile(pos[1], pos[2]) or GT_move_near_tile(display_x, display_y) then
-        GT_try_drop_at(item_id, count)
-        listenEvents(1)
-        if GT_inventory_decreased(before, item_id, 1) then
-          GT_log("Drop OK from " .. pos[1] .. "," .. pos[2])
-          return true
-        end
-      end
-    end
+    GT_log("Drop attempt " .. attempt .. "/2")
+    GT_drop_once(item_id, count)
     listenEvents(1)
   end
 
