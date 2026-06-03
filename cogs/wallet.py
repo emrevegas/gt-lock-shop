@@ -17,7 +17,7 @@ class Wallet(commands.Cog):
         name="bot_balance",
         description="Growtopia botunun WL / DL / BGL stoğu (Luci dosyasından)",
     )
-    async def bot_balance(self, interaction: discord.Interaction):
+    async def show_bot_balance(self, interaction: discord.Interaction):
         await interaction.response.send_message(
             format_bot_balance_message(),
             ephemeral=True,
